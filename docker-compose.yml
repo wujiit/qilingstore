@@ -1,0 +1,38 @@
+version: '3.9'
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: qiling-medspa-app
+    ports:
+      - "8088:80"
+    env_file:
+      - .env
+    volumes:
+      - ./:/var/www/html
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mariadb:10.11
+    container_name: qiling-medspa-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123456
+      MYSQL_DATABASE: qiling_medspa
+      MYSQL_USER: qiling
+      MYSQL_PASSWORD: qiling123
+    ports:
+      - "33069:3306"
+    volumes:
+      - qiling_medspa_db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost", "-uroot", "-proot123456"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  qiling_medspa_db_data:

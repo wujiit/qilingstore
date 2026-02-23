@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>启灵门店移动工作台</title>
+  <link rel="stylesheet" href="./assets/mobile.css" />
+</head>
+<body>
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+  <main id="loginScreen" class="screen login-screen">
+    <section class="login-card">
+      <p class="tag">QILING MOBILE</p>
+      <h1>启灵门店移动工作台</h1>
+      <p class="sub">员工建档、代客操作、消费记录</p>
+      <form id="loginForm" class="form-col">
+        <input id="loginUsername" type="text" placeholder="账号" required />
+        <input id="loginPassword" type="password" placeholder="密码" required />
+        <button id="loginBtn" type="submit" class="btn primary">登录</button>
+      </form>
+    </section>
+  </main>
+
+  <main id="workScreen" class="screen work-screen hidden">
+    <header class="topbar">
+      <div>
+        <h2>移动工作台</h2>
+        <p id="userMeta">-</p>
+      </div>
+      <button id="logoutBtn" class="btn light" type="button">退出</button>
+    </header>
+
+    <section class="panel search-panel">
+      <div class="search-row">
+        <input id="customerKeyword" type="text" placeholder="搜索客户：会员号/手机号/姓名/卡号" />
+        <button id="btnCustomerSearch" type="button" class="btn primary">搜索</button>
+      </div>
+      <div id="customerResult" class="search-result"></div>
+    </section>
+
+    <section class="panel customer-panel">
+      <h3>当前客户</h3>
+      <div id="currentCustomer" class="empty">未选择客户</div>
+    </section>
+
+    <section id="tabContent" class="tab-content"></section>
+
+    <nav class="bottom-nav">
+      <button class="nav-btn active" data-tab="onboard" type="button">客户建档</button>
+      <button class="nav-btn" data-tab="agent" type="button">代客操作</button>
+      <button class="nav-btn" data-tab="records" type="button">消费记录</button>
+    </nav>
+  </main>
+
+  <script src="./assets/mobile.js"></script>
+</body>
+</html>

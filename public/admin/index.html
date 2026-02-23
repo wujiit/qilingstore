@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>启灵医美养生门店 - 管理后台</title>
+  <link rel="stylesheet" href="./assets/admin.css" />
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+  <div class="ambient ambient-c"></div>
+
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+  <main id="loginScreen" class="screen login-screen">
+    <section class="login-card">
+      <p class="chip">启灵 · 管理后台</p>
+      <h1>启灵医美养生门店</h1>
+      <p class="sub">现代化门店运营后台</p>
+
+      <form id="loginForm" class="form-grid">
+        <label>
+          <span>账号</span>
+          <input type="text" id="loginUsername" placeholder="admin" required />
+        </label>
+        <label>
+          <span>密码</span>
+          <input type="password" id="loginPassword" placeholder="请输入密码" required />
+        </label>
+        <button type="submit" class="btn btn-primary" id="loginBtn">登录后台</button>
+      </form>
+
+      <p class="hint">请使用安装时设置的管理员账号登录</p>
+    </section>
+  </main>
+
+  <main id="appScreen" class="screen app-screen hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <p class="chip">启灵系统</p>
+        <h2>医美养生后台</h2>
+      </div>
+      <nav id="navList" class="nav-list"></nav>
+      <div class="sidebar-footer">
+        <small>管理控制台</small>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <h1 id="viewTitle">控制台</h1>
+          <p id="viewSubtitle">实时连接业务接口</p>
+        </div>
+        <div class="user-box">
+          <div>
+            <p id="userName">-</p>
+            <small id="userMeta">-</small>
+          </div>
+          <button id="logoutBtn" class="btn btn-ghost">退出</button>
+        </div>
+      </header>
+
+      <section id="viewRoot" class="view-root"></section>
+    </section>
+  </main>
+
+  <script src="./assets/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>启灵会员中心</title>
+  <link rel="stylesheet" href="./assets/customer.css" />
+</head>
+<body>
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+  <main id="entryScreen" class="screen entry-screen hidden">
+    <section class="entry-card">
+      <p class="tag">QILING MEMBER</p>
+      <h1>启灵会员中心</h1>
+      <p class="sub">请使用门店提供的二维码进入，或粘贴访问口令</p>
+      <form id="entryForm" class="form-col">
+        <input id="entryToken" type="text" placeholder="输入访问口令" required />
+        <button id="entryBtn" class="btn primary" type="submit">进入我的资料</button>
+      </form>
+      <p class="hint">为了保护隐私，门店内部备注不会在本页面展示。</p>
+    </section>
+  </main>
+
+  <main id="appScreen" class="screen app-screen hidden">
+    <header class="topbar">
+      <div>
+        <h2>我的会员中心</h2>
+        <p id="metaLine">正在加载...</p>
+      </div>
+      <div class="top-actions">
+        <button id="btnReload" class="btn light" type="button">刷新</button>
+        <button id="btnLogout" class="btn light" type="button">退出</button>
+      </div>
+    </header>
+
+    <section class="grid kpi-grid" id="kpiGrid"></section>
+
+    <section class="panel" id="profilePanel"></section>
+
+    <section class="panel">
+      <h3>会员卡</h3>
+      <div id="memberCardTable" class="empty">暂无数据</div>
+    </section>
+
+    <section class="panel">
+      <h3>优惠券</h3>
+      <div id="couponTable" class="empty">暂无数据</div>
+    </section>
+
+    <section class="panel">
+      <h3>消费记录</h3>
+      <div id="consumeTable" class="empty">暂无数据</div>
+    </section>
+
+    <section class="panel">
+      <h3>在线预约</h3>
+      <div id="appointmentPanel" class="empty">暂无可预约项目</div>
+    </section>
+
+    <section class="panel">
+      <h3>订单记录</h3>
+      <div id="orderTable" class="empty">暂无数据</div>
+    </section>
+
+    <section class="panel">
+      <h3>在线支付</h3>
+      <div id="paymentPanel" class="empty">暂无可支付订单</div>
+    </section>
+  </main>
+
+  <script src="./assets/customer.js"></script>
+</body>
+</html>
