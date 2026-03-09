@@ -12,6 +12,7 @@
   const PAYMENT_DRAFT_KEY = 'qiling_customer_payment_draft';
   const AUTO_REFRESH_MS = 8000;
   const AUTO_REFRESH_IDLE_MS = 10000;
+  const CUSTOM_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 
   const el = {
     entryScreen: document.getElementById('entryScreen'),
@@ -181,8 +182,8 @@
       'customer appointment time conflict': '该时段你已有预约，请更换时间',
       'appointment time must be in the future': '预约时间需晚于当前时间',
       'create customer portal appointment failed': '创建预约失败，请稍后再试',
-      'new_token must be 4-6 digits': '新口令必须为4-6位数字',
-      'token must be 4-6 digits': '口令必须为4-6位数字',
+      'new_token must be 16-64 chars (letters, numbers, _ or -)': '新口令需为16-64位，仅支持字母、数字、下划线和中划线',
+      'token must be 16-64 chars (letters, numbers, _ or -)': '口令需为16-64位，仅支持字母、数字、下划线和中划线',
       'new_token must be different from current token': '新口令不能与当前口令相同',
       'token already exists': '该口令已被占用，请换一个',
     };
@@ -936,8 +937,8 @@
       tokenForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const newToken = String(tokenInput ? tokenInput.value : '').trim();
-        if (newToken && !/^\d{4,6}$/.test(newToken)) {
-          toast('新口令必须为4-6位数字', 'error');
+        if (newToken && !CUSTOM_TOKEN_PATTERN.test(newToken)) {
+          toast('新口令需为16-64位，仅支持字母、数字、下划线和中划线', 'error');
           return;
         }
         const submitBtn = tokenForm.querySelector('button[type="submit"]');
@@ -1003,7 +1004,7 @@
       </div>
       <section class="token-panel">
         <h4>访问口令管理</h4>
-        <p class="hint">用于进入你的会员中心（4-6位数字）。二维码建议首次进入时使用，后续可直接输入口令。</p>
+        <p class="hint">用于进入你的会员中心（16-64位，仅支持字母、数字、下划线和中划线）。二维码建议首次进入时使用，后续可直接输入口令。</p>
         <div class="token-row">
           <span class="token-label">当前口令</span>
           <code id="portalTokenText" class="token-code">${escapeHtml(maskToken(state.token))}</code>
@@ -1015,8 +1016,8 @@
         </div>
         <form id="portalTokenRotateForm" class="token-form">
           <label>
-            <span>新口令（4-6位数字）</span>
-            <input name="new_token" placeholder="留空则自动生成新口令" maxlength="6" inputmode="numeric" pattern="\\d{4,6}" />
+            <span>新口令（16-64位，字母/数字/_/-）</span>
+            <input name="new_token" placeholder="留空则自动生成新口令" minlength="16" maxlength="64" inputmode="text" autocapitalize="off" autocomplete="off" spellcheck="false" pattern="[A-Za-z0-9_-]{16,64}" />
           </label>
           <div class="token-actions">
             <button class="btn primary" type="submit">更新访问口令</button>

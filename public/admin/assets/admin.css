@@ -196,6 +196,12 @@ textarea {
   font-size: 12px;
 }
 
+.login-extra {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
 .app-screen {
   min-height: 100vh;
   display: grid;

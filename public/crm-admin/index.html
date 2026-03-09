@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>启灵 CRM 后台</title>
+  <link rel="stylesheet" href="./assets/crm-admin.css">
+</head>
+<body>
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+  <main id="loginScreen" class="screen login-screen">
+    <section class="login-card">
+      <p class="chip">QILING CRM</p>
+      <h1>CRM 独立后台</h1>
+      <p class="sub">共享账号登录，数据与门店会员业务独立</p>
+      <form id="loginForm" class="form-grid">
+        <label><span>账号</span><input type="text" id="loginUsername" placeholder="admin" required></label>
+        <label><span>密码</span><input type="password" id="loginPassword" placeholder="请输入密码" required></label>
+        <button type="submit" class="btn btn-primary" id="loginBtn">登录 CRM</button>
+      </form>
+      <div class="login-extra">
+        <button type="button" class="btn btn-line" id="forgotPwdBtn">忘记密码（邮箱找回）</button>
+      </div>
+      <p class="hint">若未启用邮箱找回，可使用应急恢复文件重置管理员密码。</p>
+    </section>
+  </main>
+
+  <main id="appScreen" class="screen app-screen hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <p class="chip">QILING</p>
+        <h2>CRM 控制台</h2>
+      </div>
+      <nav id="navList" class="nav-list"></nav>
+      <div class="sidebar-footer"><small>v1 CRM</small></div>
+    </aside>
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <h1 id="viewTitle">CRM</h1>
+          <p id="viewSubtitle">独立业务域与数据模型</p>
+        </div>
+        <div class="user-box">
+          <div>
+            <p id="userName">-</p>
+            <small id="userMeta">-</small>
+          </div>
+          <button id="logoutBtn" class="btn btn-ghost">退出</button>
+        </div>
+      </header>
+      <section id="viewRoot" class="view-root"></section>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      var p = String(window.location.pathname || '');
+      var marker = '/crm-admin';
+      var idx = p.indexOf(marker);
+      window.__QILING_ROOT_PATH__ = idx > 0 ? p.slice(0, idx) : '';
+    })();
+  </script>
+  <script src="./assets/crm-admin.js"></script>
+</body>
+</html>

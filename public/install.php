@@ -24,18 +24,27 @@ $defaults = [
     'wp_sync_secret' => '',
 ];
 
+$message = '';
+$error = '';
+$success = false;
+
 $installed = detectInstalled($envPath);
+$existingEnv = parseEnvFile($envPath);
+$allowWebReinstall = toBoolValue((string) ($existingEnv['INSTALL_ALLOW_REINSTALL'] ?? 'false'));
+$autoLockError = '';
 if (!isInstallLocked($installLockPath) && !empty($installed['installed'])) {
     try {
         writeInstallLock($installLockPath);
-    } catch (Throwable) {
+    } catch (Throwable $e) {
+        $autoLockError = $e->getMessage();
     }
 }
 $locked = isInstallLocked($installLockPath);
 $force = isset($_GET['force']) && $_GET['force'] === '1';
-$message = '';
-$error = '';
-$success = false;
+if (!empty($installed['installed']) && !$locked && $autoLockError !== '') {
+    $error = '检测到系统已安装，但安装锁自动补写失败：' . $autoLockError
+        . '。请先手动创建/修复安装锁文件后再访问。';
+}
 
 $data = $defaults;
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -53,11 +62,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ];
 
     try {
+        if (!empty($installed['installed']) && !$locked && $autoLockError !== '') {
+            throw new RuntimeException('安装锁异常，已禁止安装操作：' . $autoLockError);
+        }
+
         if ($locked) {
             throw new RuntimeException('安装向导已锁定。请先删除文件后再操作：' . $installLockPath);
         }
-        if (!empty($installed['installed']) && !$force) {
-            throw new RuntimeException('系统已安装。如需重装，请使用 ?force=1 打开本页。');
+        if (!empty($installed['installed'])) {
+            if (!$allowWebReinstall) {
+                throw new RuntimeException('系统已安装。为安全起见，网页安装向导默认禁止重装。');
+            }
+            if (!$force) {
+                throw new RuntimeException('系统已安装且已开启网页重装权限。如确需重装，请使用 ?force=1 打开本页。');
+            }
         }
 
         foreach (environmentChecks($projectRoot, $envExamplePath, $schemaPath) as $check) {
@@ -272,7 +290,7 @@ function installSystem(array $data, string $projectRoot, string $envExamplePath,
         throw new RuntimeException('schema.sql 读取失败');
     }
 
-    $statements = preg_split('/;\s*\n/', $schemaSql);
+    $statements = preg_split('/;\s*(?:\r?\n|$)/', $schemaSql);
     if (!is_array($statements)) {
         throw new RuntimeException('schema.sql 解析失败');
     }
@@ -294,20 +312,177 @@ function installSystem(array $data, string $projectRoot, string $envExamplePath,
     ensureColumn($pdo, 'qiling_users', 'login_lock_until', 'DATETIME NULL');
     ensureColumn($pdo, 'qiling_users', 'last_login_at', 'DATETIME NULL');
     ensureColumn($pdo, 'qiling_users', 'last_login_ip', 'VARCHAR(64) NOT NULL DEFAULT \'\'');
+    ensureColumn($pdo, 'qiling_users', 'token_version', 'INT NOT NULL DEFAULT 1');
     ensureColumn($pdo, 'qiling_followup_tasks', 'notify_status', 'VARCHAR(20) NOT NULL DEFAULT \'pending\'');
     ensureColumn($pdo, 'qiling_followup_tasks', 'notified_at', 'DATETIME NULL');
     ensureColumn($pdo, 'qiling_followup_tasks', 'notify_channel_id', 'BIGINT UNSIGNED DEFAULT NULL');
     ensureColumn($pdo, 'qiling_followup_tasks', 'notify_error', 'VARCHAR(500) NOT NULL DEFAULT \'\'');
     ensureColumn($pdo, 'qiling_services', 'supports_online_booking', 'TINYINT(1) NOT NULL DEFAULT 0');
+    ensureColumn($pdo, 'qiling_report_daily_channel', 'paid_customers', 'INT NOT NULL DEFAULT 0');
+    ensureColumn($pdo, 'qiling_password_reset_requests', 'channel', 'VARCHAR(20) NOT NULL DEFAULT \'email\'');
+    ensureColumn($pdo, 'qiling_password_reset_requests', 'receiver', 'VARCHAR(160) NOT NULL DEFAULT \'\'');
+    ensureColumn($pdo, 'qiling_password_reset_requests', 'code_hash', 'CHAR(64) NOT NULL DEFAULT \'\'');
+    ensureColumn($pdo, 'qiling_password_reset_requests', 'expire_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_password_reset_requests', 'used_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_password_reset_requests', 'fail_count', 'INT NOT NULL DEFAULT 0');
+    ensureColumn($pdo, 'qiling_password_reset_requests', 'request_ip', 'VARCHAR(64) NOT NULL DEFAULT \'\'');
+    ensureColumn($pdo, 'qiling_password_reset_requests', 'requested_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_password_reset_requests', 'created_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_password_reset_requests', 'updated_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_crm_companies', 'is_archived', 'TINYINT(1) NOT NULL DEFAULT 0');
+    ensureColumn($pdo, 'qiling_crm_companies', 'archived_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_crm_companies', 'archived_by', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_companies', 'deleted_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_crm_companies', 'deleted_by', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_companies', 'owner_team_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_companies', 'owner_department_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_companies', 'visibility_level', 'VARCHAR(20) NOT NULL DEFAULT \'private\'');
+    ensureColumn($pdo, 'qiling_crm_contacts', 'is_archived', 'TINYINT(1) NOT NULL DEFAULT 0');
+    ensureColumn($pdo, 'qiling_crm_contacts', 'archived_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_crm_contacts', 'archived_by', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_contacts', 'deleted_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_crm_contacts', 'deleted_by', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_contacts', 'owner_team_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_contacts', 'owner_department_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_contacts', 'visibility_level', 'VARCHAR(20) NOT NULL DEFAULT \'private\'');
+    ensureColumn($pdo, 'qiling_crm_leads', 'visibility_scope', 'VARCHAR(20) NOT NULL DEFAULT \'private\'');
+    ensureColumn($pdo, 'qiling_crm_leads', 'public_pool_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_crm_leads', 'is_archived', 'TINYINT(1) NOT NULL DEFAULT 0');
+    ensureColumn($pdo, 'qiling_crm_leads', 'archived_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_crm_leads', 'archived_by', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_leads', 'deleted_at', 'DATETIME NULL');
+    ensureColumn($pdo, 'qiling_crm_leads', 'deleted_by', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_leads', 'owner_team_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_leads', 'owner_department_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_leads', 'visibility_level', 'VARCHAR(20) NOT NULL DEFAULT \'private\'');
+    ensureColumn($pdo, 'qiling_crm_deals', 'owner_team_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_deals', 'owner_department_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_deals', 'visibility_level', 'VARCHAR(20) NOT NULL DEFAULT \'private\'');
+    ensureColumn($pdo, 'qiling_crm_activities', 'owner_team_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_activities', 'owner_department_id', 'BIGINT UNSIGNED DEFAULT NULL');
+    ensureColumn($pdo, 'qiling_crm_activities', 'visibility_level', 'VARCHAR(20) NOT NULL DEFAULT \'private\'');
+    ensureColumn($pdo, 'qiling_crm_assignment_rules', 'last_pick_index', 'INT NOT NULL DEFAULT -1');
+    ensureIndex($pdo, 'qiling_password_reset_requests', 'idx_qiling_pwd_reset_lookup', 'INDEX idx_qiling_pwd_reset_lookup (user_id, channel, receiver, used_at, id)');
+    ensureIndex($pdo, 'qiling_password_reset_requests', 'idx_qiling_pwd_reset_user', 'INDEX idx_qiling_pwd_reset_user (user_id, requested_at)');
+    ensureIndex($pdo, 'qiling_password_reset_requests', 'idx_qiling_pwd_reset_ip', 'INDEX idx_qiling_pwd_reset_ip (request_ip, requested_at)');
+    ensureIndex($pdo, 'qiling_password_reset_requests', 'idx_qiling_pwd_reset_expire_used', 'INDEX idx_qiling_pwd_reset_expire_used (expire_at, used_at)');
+
+    ensureIndex($pdo, 'qiling_crm_pipelines', 'idx_qiling_crm_pipelines_status', 'INDEX idx_qiling_crm_pipelines_status (status)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'idx_qiling_crm_companies_owner_status', 'INDEX idx_qiling_crm_companies_owner_status (owner_user_id, status, id)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'idx_qiling_crm_companies_status_id', 'INDEX idx_qiling_crm_companies_status_id (status, id)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'idx_qiling_crm_companies_country', 'INDEX idx_qiling_crm_companies_country (country_code)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'idx_qiling_crm_companies_type', 'INDEX idx_qiling_crm_companies_type (company_type)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'idx_qiling_crm_companies_created_at', 'INDEX idx_qiling_crm_companies_created_at (created_at)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'idx_qiling_crm_companies_company_name', 'INDEX idx_qiling_crm_companies_company_name (company_name)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'idx_qiling_crm_companies_created_by_id', 'INDEX idx_qiling_crm_companies_created_by_id (created_by, id)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'idx_qiling_crm_companies_company_deleted_id', 'INDEX idx_qiling_crm_companies_company_deleted_id (company_name, deleted_at, id)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'idx_qiling_crm_companies_owner_deleted_archived_id', 'INDEX idx_qiling_crm_companies_owner_deleted_archived_id (owner_user_id, deleted_at, is_archived, id)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'ft_qiling_crm_companies_search', 'FULLTEXT INDEX ft_qiling_crm_companies_search (company_name, website, industry)');
+    ensureIndex($pdo, 'qiling_crm_companies', 'idx_qiling_crm_companies_deleted_archived', 'INDEX idx_qiling_crm_companies_deleted_archived (deleted_at, is_archived, id)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_owner_status', 'INDEX idx_qiling_crm_contacts_owner_status (owner_user_id, status, id)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_status_id', 'INDEX idx_qiling_crm_contacts_status_id (status, id)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_company', 'INDEX idx_qiling_crm_contacts_company (company_id)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_mobile', 'INDEX idx_qiling_crm_contacts_mobile (mobile)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_email', 'INDEX idx_qiling_crm_contacts_email (email)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_created_at', 'INDEX idx_qiling_crm_contacts_created_at (created_at)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_whatsapp', 'INDEX idx_qiling_crm_contacts_whatsapp (whatsapp)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_created_by_id', 'INDEX idx_qiling_crm_contacts_created_by_id (created_by, id)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_mobile_deleted_id', 'INDEX idx_qiling_crm_contacts_mobile_deleted_id (mobile, deleted_at, id)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_email_deleted_id', 'INDEX idx_qiling_crm_contacts_email_deleted_id (email, deleted_at, id)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_whatsapp_deleted_id', 'INDEX idx_qiling_crm_contacts_whatsapp_deleted_id (whatsapp, deleted_at, id)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_owner_deleted_archived_id', 'INDEX idx_qiling_crm_contacts_owner_deleted_archived_id (owner_user_id, deleted_at, is_archived, id)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_company_deleted_archived_id', 'INDEX idx_qiling_crm_contacts_company_deleted_archived_id (company_id, deleted_at, is_archived, id)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'ft_qiling_crm_contacts_search', 'FULLTEXT INDEX ft_qiling_crm_contacts_search (contact_name, mobile, email, whatsapp)');
+    ensureIndex($pdo, 'qiling_crm_contacts', 'idx_qiling_crm_contacts_deleted_archived', 'INDEX idx_qiling_crm_contacts_deleted_archived (deleted_at, is_archived, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_owner_status', 'INDEX idx_qiling_crm_leads_owner_status (owner_user_id, status, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_status_id', 'INDEX idx_qiling_crm_leads_status_id (status, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_owner_intent_id', 'INDEX idx_qiling_crm_leads_owner_intent_id (owner_user_id, intent_level, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_next_followup', 'INDEX idx_qiling_crm_leads_next_followup (next_followup_at, status)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_mobile', 'INDEX idx_qiling_crm_leads_mobile (mobile)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_email', 'INDEX idx_qiling_crm_leads_email (email)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_company', 'INDEX idx_qiling_crm_leads_company (related_company_id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_contact', 'INDEX idx_qiling_crm_leads_contact (related_contact_id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_visibility_owner', 'INDEX idx_qiling_crm_leads_visibility_owner (visibility_scope, owner_user_id, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_public_pool', 'INDEX idx_qiling_crm_leads_public_pool (visibility_scope, public_pool_at, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_created_by_id', 'INDEX idx_qiling_crm_leads_created_by_id (created_by, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_company_name_deleted_id', 'INDEX idx_qiling_crm_leads_company_name_deleted_id (company_name, deleted_at, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_mobile_deleted_id', 'INDEX idx_qiling_crm_leads_mobile_deleted_id (mobile, deleted_at, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_email_deleted_id', 'INDEX idx_qiling_crm_leads_email_deleted_id (email, deleted_at, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_owner_deleted_archived_id', 'INDEX idx_qiling_crm_leads_owner_deleted_archived_id (owner_user_id, deleted_at, is_archived, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_created_deleted_archived_id', 'INDEX idx_qiling_crm_leads_created_deleted_archived_id (created_by, deleted_at, is_archived, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_visibility_deleted_archived_pool', 'INDEX idx_qiling_crm_leads_visibility_deleted_archived_pool (visibility_scope, deleted_at, is_archived, public_pool_at, id)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'ft_qiling_crm_leads_search', 'FULLTEXT INDEX ft_qiling_crm_leads_search (lead_name, mobile, email, company_name)');
+    ensureIndex($pdo, 'qiling_crm_leads', 'idx_qiling_crm_leads_deleted_archived', 'INDEX idx_qiling_crm_leads_deleted_archived (deleted_at, is_archived, id)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'idx_qiling_crm_deals_owner_status', 'INDEX idx_qiling_crm_deals_owner_status (owner_user_id, deal_status, id)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'idx_qiling_crm_deals_status_id', 'INDEX idx_qiling_crm_deals_status_id (deal_status, id)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'idx_qiling_crm_deals_pipeline_stage', 'INDEX idx_qiling_crm_deals_pipeline_stage (pipeline_key, stage_key)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'idx_qiling_crm_deals_pipeline_stage_id', 'INDEX idx_qiling_crm_deals_pipeline_stage_id (pipeline_key, stage_key, id)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'idx_qiling_crm_deals_expected_close', 'INDEX idx_qiling_crm_deals_expected_close (expected_close_date)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'idx_qiling_crm_deals_owner_id', 'INDEX idx_qiling_crm_deals_owner_id (owner_user_id, id)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'idx_qiling_crm_deals_company', 'INDEX idx_qiling_crm_deals_company (company_id)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'idx_qiling_crm_deals_contact', 'INDEX idx_qiling_crm_deals_contact (contact_id)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'idx_qiling_crm_deals_lead', 'INDEX idx_qiling_crm_deals_lead (lead_id)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'idx_qiling_crm_deals_created_by_id', 'INDEX idx_qiling_crm_deals_created_by_id (created_by, id)');
+    ensureIndex($pdo, 'qiling_crm_deals', 'ft_qiling_crm_deals_name', 'FULLTEXT INDEX ft_qiling_crm_deals_name (deal_name)');
+    ensureIndex($pdo, 'qiling_crm_activities', 'idx_qiling_crm_activities_owner_status_due', 'INDEX idx_qiling_crm_activities_owner_status_due (owner_user_id, status, due_at, id)');
+    ensureIndex($pdo, 'qiling_crm_activities', 'idx_qiling_crm_activities_status_due_id', 'INDEX idx_qiling_crm_activities_status_due_id (status, due_at, id)');
+    ensureIndex($pdo, 'qiling_crm_activities', 'idx_qiling_crm_activities_entity', 'INDEX idx_qiling_crm_activities_entity (entity_type, entity_id, id)');
+    ensureIndex($pdo, 'qiling_crm_activities', 'idx_qiling_crm_activities_owner_id', 'INDEX idx_qiling_crm_activities_owner_id (owner_user_id, id)');
+    ensureIndex($pdo, 'qiling_crm_activities', 'idx_qiling_crm_activities_created_by_id', 'INDEX idx_qiling_crm_activities_created_by_id (created_by, id)');
+    ensureIndex($pdo, 'qiling_crm_activities', 'idx_qiling_crm_activities_due_status', 'INDEX idx_qiling_crm_activities_due_status (due_at, status)');
+    ensureIndex($pdo, 'qiling_crm_transfer_logs', 'idx_qiling_crm_transfer_logs_entity', 'INDEX idx_qiling_crm_transfer_logs_entity (entity_type, entity_id, id)');
+    ensureIndex($pdo, 'qiling_crm_transfer_logs', 'idx_qiling_crm_transfer_logs_entity_type_id', 'INDEX idx_qiling_crm_transfer_logs_entity_type_id (entity_type, id)');
+    ensureIndex($pdo, 'qiling_crm_transfer_logs', 'idx_qiling_crm_transfer_logs_to_owner', 'INDEX idx_qiling_crm_transfer_logs_to_owner (to_owner_user_id, id)');
+    ensureIndex($pdo, 'qiling_crm_transfer_logs', 'idx_qiling_crm_transfer_logs_from_owner', 'INDEX idx_qiling_crm_transfer_logs_from_owner (from_owner_user_id, id)');
+    ensureIndex($pdo, 'qiling_crm_transfer_logs', 'idx_qiling_crm_transfer_logs_created_by', 'INDEX idx_qiling_crm_transfer_logs_created_by (created_by, id)');
+    ensureIndex($pdo, 'qiling_crm_transfer_logs', 'idx_qiling_crm_transfer_logs_created_at', 'INDEX idx_qiling_crm_transfer_logs_created_at (created_at)');
+    ensureIndex($pdo, 'qiling_crm_assignment_rules', 'idx_qiling_crm_assignment_rules_entity_enabled', 'INDEX idx_qiling_crm_assignment_rules_entity_enabled (entity_type, enabled, id)');
+    ensureIndex($pdo, 'qiling_crm_assignment_rules', 'idx_qiling_crm_assignment_rules_source_scope', 'INDEX idx_qiling_crm_assignment_rules_source_scope (source_scope, enabled, id)');
 
     $now = gmdate('Y-m-d H:i:s');
+    $crmPermissionsView = [
+        'crm',
+        'crm.dashboard.view',
+        'crm.pipelines.view',
+        'crm.companies.view',
+        'crm.contacts.view',
+        'crm.leads.view',
+        'crm.deals.view',
+        'crm.activities.view',
+        'crm.org.view',
+        'crm.custom_fields.view',
+        'crm.form_config.view',
+        'crm.reminders.view',
+    ];
+    $crmPermissionsEdit = [
+        'crm.companies.edit',
+        'crm.contacts.edit',
+        'crm.leads.edit',
+        'crm.leads.convert',
+        'crm.deals.edit',
+        'crm.activities.edit',
+        'crm.org.edit',
+        'crm.custom_fields.edit',
+        'crm.form_config.edit',
+        'crm.reminders.edit',
+    ];
+    $crmPermissionsManage = [
+        'crm.scope.all',
+        'crm.pipelines.manage',
+        'crm.leads.assign',
+        'crm.governance.manage',
+        'crm.assignment_rules.view',
+        'crm.assignment_rules.edit',
+        'crm.assignment_rules.manage',
+        'crm.transfer_logs.view',
+    ];
 
     $roles = [
-        ['admin', '系统管理员', ['dashboard', 'stores', 'staff', 'customers', 'services', 'packages', 'member_cards', 'orders', 'appointments', 'followup', 'push', 'commissions', 'reports', 'points', 'open_gifts', 'coupon_groups', 'transfers', 'prints', 'wp_users', 'system']],
-        ['manager', '门店经理', ['dashboard', 'stores', 'staff', 'customers', 'services', 'packages', 'member_cards', 'orders', 'appointments', 'followup', 'push', 'commissions', 'reports', 'points', 'open_gifts', 'coupon_groups', 'transfers', 'prints', 'wp_users']],
-        ['consultant', '顾问', ['dashboard', 'customers', 'member_cards', 'orders', 'appointments', 'followup', 'reports', 'points', 'prints']],
-        ['therapist', '护理师', ['dashboard', 'customers', 'appointments', 'followup', 'performance']],
-        ['reception', '前台', ['dashboard', 'customers', 'orders', 'appointments', 'followup']],
+        ['admin', '系统管理员', array_merge(['dashboard', 'stores', 'staff', 'customers', 'services', 'packages', 'member_cards', 'orders', 'appointments', 'followup', 'push', 'commissions', 'reports', 'points', 'open_gifts', 'coupon_groups', 'transfers', 'prints', 'wp_users', 'system'], $crmPermissionsView, $crmPermissionsEdit, $crmPermissionsManage)],
+        ['manager', '门店经理', array_merge(['dashboard', 'stores', 'staff', 'customers', 'services', 'packages', 'member_cards', 'orders', 'appointments', 'followup', 'push', 'commissions', 'reports', 'points', 'open_gifts', 'coupon_groups', 'transfers', 'prints', 'wp_users'], $crmPermissionsView, $crmPermissionsEdit, $crmPermissionsManage)],
+        ['consultant', '顾问', array_merge(['dashboard', 'customers', 'member_cards', 'orders', 'appointments', 'followup', 'reports', 'points', 'prints'], $crmPermissionsView, $crmPermissionsEdit)],
+        ['therapist', '护理师', array_merge(['dashboard', 'customers', 'appointments', 'followup', 'performance'], $crmPermissionsView, $crmPermissionsEdit)],
+        ['reception', '前台', array_merge(['dashboard', 'customers', 'orders', 'appointments', 'followup'], $crmPermissionsView, $crmPermissionsEdit)],
     ];
 
     $roleStmt = $pdo->prepare(
@@ -369,6 +544,34 @@ function installSystem(array $data, string $projectRoot, string $envExamplePath,
         'updated_at' => $now,
     ]);
 
+    $crmPipelineStmt = $pdo->prepare(
+        'INSERT INTO qiling_crm_pipelines
+         (pipeline_key, pipeline_name, stages_json, is_system, status, created_at, updated_at)
+         VALUES
+         (:pipeline_key, :pipeline_name, :stages_json, 1, :status, :created_at, :updated_at)
+         ON DUPLICATE KEY UPDATE
+            pipeline_name = VALUES(pipeline_name),
+            stages_json = VALUES(stages_json),
+            status = VALUES(status),
+            updated_at = VALUES(updated_at)'
+    );
+    $crmPipelineStmt->execute([
+        'pipeline_key' => 'default',
+        'pipeline_name' => '默认销售管道',
+        'stages_json' => json_encode([
+            ['key' => 'new', 'name' => '新建线索', 'sort' => 10],
+            ['key' => 'contacted', 'name' => '已触达', 'sort' => 20],
+            ['key' => 'qualified', 'name' => '已确认需求', 'sort' => 30],
+            ['key' => 'proposal', 'name' => '方案/报价', 'sort' => 40],
+            ['key' => 'negotiation', 'name' => '商务谈判', 'sort' => 50],
+            ['key' => 'won', 'name' => '赢单', 'sort' => 60],
+            ['key' => 'lost', 'name' => '输单', 'sort' => 70],
+        ], JSON_UNESCAPED_UNICODE),
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
     $settingStmt = $pdo->prepare(
         'INSERT INTO qiling_system_settings (setting_key, setting_value, updated_by, created_at, updated_at)
          VALUES (:setting_key, :setting_value, 0, :created_at, :updated_at)
@@ -382,6 +585,7 @@ function installSystem(array $data, string $projectRoot, string $envExamplePath,
         'front_maintenance_message' => '系统维护中，请稍后访问。',
         'front_allow_ips' => '',
         'security_headers_enabled' => '1',
+        'frontend_asset_version_seed' => '',
     ];
     foreach ($defaultSettings as $settingKey => $settingValue) {
         $settingStmt->execute([
@@ -498,6 +702,27 @@ function ensureColumn(PDO $pdo, string $table, string $column, string $definitio
     $pdo->exec('ALTER TABLE `' . str_replace('`', '``', $table) . '` ADD COLUMN `' . str_replace('`', '``', $column) . '` ' . $definition);
 }
 
+function ensureIndex(PDO $pdo, string $table, string $indexName, string $indexDefinition): void
+{
+    $check = $pdo->prepare(
+        'SELECT COUNT(*) FROM information_schema.STATISTICS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = :table_name
+           AND INDEX_NAME = :index_name'
+    );
+    $check->execute([
+        'table_name' => $table,
+        'index_name' => $indexName,
+    ]);
+
+    $exists = (int) $check->fetchColumn() > 0;
+    if ($exists) {
+        return;
+    }
+
+    $pdo->exec('ALTER TABLE `' . str_replace('`', '``', $table) . '` ADD ' . $indexDefinition);
+}
+
 /**
  * @return array<string, string>
  */
@@ -530,6 +755,11 @@ function parseEnvFile(string $path): array
     }
 
     return $result;
+}
+
+function toBoolValue(string $value): bool
+{
+    return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
 }
 
 /**
@@ -665,11 +895,18 @@ function formatEnvValue(string $value): string
                 <code><?php echo h($installLockPath); ?></code>
             </div>
         <?php endif; ?>
-        <?php if (!empty($installed['installed']) && !$force && !$success): ?>
-            <div class="alert alert-warn">
-                检测到系统已安装。若你确认要重装，请访问：
-                <a href="?force=1">?force=1</a>
-            </div>
+        <?php if (!empty($installed['installed']) && !$success): ?>
+            <?php if (!$allowWebReinstall): ?>
+                <div class="alert alert-warn">
+                    检测到系统已安装。网页重装默认禁用（可在 <code>.env</code> 设置
+                    <code>INSTALL_ALLOW_REINSTALL=true</code> 后配合 <code>?force=1</code> 使用）。
+                </div>
+            <?php elseif (!$force): ?>
+                <div class="alert alert-warn">
+                    检测到系统已安装。若你确认要重装，请访问：
+                    <a href="?force=1">?force=1</a>
+                </div>
+            <?php endif; ?>
         <?php endif; ?>
 
         <form method="post">
