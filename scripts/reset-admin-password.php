@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use PDO;
+use Qiling\Core\Auth;
 use Qiling\Core\Config;
 use Qiling\Core\Database;
 
@@ -70,6 +71,7 @@ if (is_array($target)) {
         'updated_at' => $now,
         'id' => (int) $target['id'],
     ]);
+    Auth::bumpTokenVersion($pdo, (int) $target['id'], $now);
 
     echo "Admin password reset success\n";
     echo "User ID: " . (int) $target['id'] . "\n";
@@ -167,6 +169,7 @@ function ensureLoginSecurityColumns(PDO $pdo): void
     ensureColumn($pdo, 'qiling_users', 'login_lock_until', 'DATETIME NULL');
     ensureColumn($pdo, 'qiling_users', 'last_login_at', 'DATETIME NULL');
     ensureColumn($pdo, 'qiling_users', 'last_login_ip', "VARCHAR(64) NOT NULL DEFAULT ''");
+    ensureColumn($pdo, 'qiling_users', 'token_version', 'INT NOT NULL DEFAULT 1');
 }
 
 function ensureColumn(PDO $pdo, string $table, string $column, string $definition): void

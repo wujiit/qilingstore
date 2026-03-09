@@ -10,6 +10,7 @@ use Qiling\Core\Auth;
 use Qiling\Core\CommissionService;
 use Qiling\Core\DataScope;
 use Qiling\Core\Database;
+use Qiling\Core\InventoryService;
 use Qiling\Core\OpenGiftService;
 use Qiling\Core\PointsService;
 use Qiling\Core\PrintService;
@@ -26,8 +27,10 @@ final class OrderController
         $scopeStoreId = DataScope::resolveFilterStoreId($user, $storeId);
         $customerId = isset($_GET['customer_id']) && is_numeric($_GET['customer_id']) ? (int) $_GET['customer_id'] : null;
         $status = isset($_GET['status']) && is_string($_GET['status']) ? trim($_GET['status']) : '';
+        $cursor = isset($_GET['cursor']) && is_numeric($_GET['cursor']) ? (int) $_GET['cursor'] : 0;
         $limit = isset($_GET['limit']) && is_numeric($_GET['limit']) ? (int) $_GET['limit'] : 200;
         $limit = max(1, min($limit, 1000));
+        $queryLimit = $limit + 1;
 
         $sql = 'SELECT o.*, c.customer_no, c.name AS customer_name, c.mobile AS customer_mobile, s.store_name
                 FROM qiling_orders o
@@ -51,13 +54,38 @@ final class OrderController
             $params['status'] = $status;
         }
 
-        $sql .= ' ORDER BY o.id DESC LIMIT ' . $limit;
+        if ($cursor > 0) {
+            $sql .= ' AND o.id < :cursor';
+            $params['cursor'] = $cursor;
+        }
+
+        $sql .= ' ORDER BY o.id DESC LIMIT ' . $queryLimit;
 
         $stmt = Database::pdo()->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $hasMore = count($rows) > $limit;
+        if ($hasMore) {
+            $rows = array_slice($rows, 0, $limit);
+        }
+        $nextCursor = null;
+        if ($hasMore && !empty($rows)) {
+            $tail = $rows[count($rows) - 1];
+            $nextCursor = (int) ($tail['id'] ?? 0);
+            if ($nextCursor <= 0) {
+                $nextCursor = null;
+            }
+        }
 
-        Response::json(['data' => $rows]);
+        Response::json([
+            'data' => $rows,
+            'pagination' => [
+                'limit' => $limit,
+                'cursor' => $cursor > 0 ? $cursor : null,
+                'next_cursor' => $nextCursor,
+                'has_more' => $hasMore,
+            ],
+        ]);
     }
 
     public static function items(): void
@@ -315,6 +343,7 @@ final class OrderController
             $pointsResult = null;
             $openGiftResult = null;
             $printJob = null;
+            $inventoryConsume = null;
             $sideEffectWarnings = [];
 
             $stmt = $pdo->prepare(
@@ -443,6 +472,27 @@ final class OrderController
                 }
 
                 try {
+                    $inventoryConsume = InventoryService::consumeMaterialsForOrder(
+                        $pdo,
+                        $orderId,
+                        (int) $order['store_id'],
+                        (int) $user['id']
+                    );
+                    if (is_array($inventoryConsume)) {
+                        $consumeWarnings = $inventoryConsume['warnings'] ?? [];
+                        if (is_array($consumeWarnings) && !empty($consumeWarnings)) {
+                            foreach ($consumeWarnings as $warn) {
+                                if (is_string($warn) && trim($warn) !== '') {
+                                    $sideEffectWarnings[] = 'inventory_consume_warning: ' . trim($warn);
+                                }
+                            }
+                        }
+                    }
+                } catch (\Throwable $t) {
+                    $sideEffectWarnings[] = 'inventory_consume_failed: ' . $t->getMessage();
+                }
+
+                try {
                     $printJob = PrintService::createOrderReceiptJob(
                         $pdo,
                         $orderId,
@@ -464,6 +514,8 @@ final class OrderController
                 'status' => $newStatus,
                 'points_awarded' => is_array($pointsResult) ? (int) ($pointsResult['delta_points'] ?? 0) : 0,
                 'open_gift_triggered' => is_array($openGiftResult) && (($openGiftResult['triggered'] ?? false) === true) ? 1 : 0,
+                'inventory_movements' => is_array($inventoryConsume) ? (int) ($inventoryConsume['movement_count'] ?? 0) : 0,
+                'inventory_total_cost' => is_array($inventoryConsume) ? (float) ($inventoryConsume['total_cost'] ?? 0) : 0.0,
                 'print_job_id' => is_array($printJob) ? (int) ($printJob['print_job_id'] ?? 0) : 0,
             ]);
 
@@ -477,6 +529,7 @@ final class OrderController
                 'outstanding_amount' => round(max(0.0, $payableAmount - $paidAmountAfter), 2),
                 'points' => $pointsResult,
                 'open_gift' => $openGiftResult,
+                'inventory_consume' => $inventoryConsume,
                 'print_job' => $printJob,
                 'warnings' => $sideEffectWarnings,
             ]);

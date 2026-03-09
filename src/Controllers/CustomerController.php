@@ -21,6 +21,10 @@ final class CustomerController
         $user = Auth::requireUser(Auth::userFromBearerToken());
         $storeId = isset($_GET['store_id']) && is_numeric($_GET['store_id']) ? (int) $_GET['store_id'] : null;
         $scopeStoreId = DataScope::resolveFilterStoreId($user, $storeId);
+        $cursor = isset($_GET['cursor']) && is_numeric($_GET['cursor']) ? (int) $_GET['cursor'] : 0;
+        $limit = isset($_GET['limit']) && is_numeric($_GET['limit']) ? (int) $_GET['limit'] : 1000;
+        $limit = max(1, min($limit, 2000));
+        $queryLimit = $limit + 1;
         $pdo = Database::pdo();
         CustomerPortalService::ensureTables($pdo);
 
@@ -29,33 +33,72 @@ final class CustomerController
                        pt.expire_at AS portal_expire_at
                 FROM qiling_customers c
                 LEFT JOIN qiling_stores s ON s.id = c.store_id
-                LEFT JOIN qiling_customer_portal_tokens pt ON pt.id = (
-                    SELECT t.id
-                    FROM qiling_customer_portal_tokens t
-                    WHERE t.customer_id = c.id
-                      AND t.status = :portal_status
-                      AND (t.expire_at IS NULL OR t.expire_at >= :portal_now)
-                    ORDER BY t.id DESC
-                    LIMIT 1
-                )';
+                LEFT JOIN (
+                    SELECT t1.customer_id, t1.token_prefix, t1.expire_at
+                    FROM qiling_customer_portal_tokens t1
+                    INNER JOIN (
+                        SELECT customer_id, MAX(id) AS latest_id
+                        FROM qiling_customer_portal_tokens
+                        WHERE status = :portal_status
+                          AND (expire_at IS NULL OR expire_at >= :portal_now)
+                        GROUP BY customer_id
+                    ) latest ON latest.customer_id = t1.customer_id
+                            AND latest.latest_id = t1.id
+                ) pt ON pt.customer_id = c.id
+                WHERE 1 = 1';
         $params = [];
         $params['portal_status'] = 'active';
         $params['portal_now'] = gmdate('Y-m-d H:i:s');
         if ($scopeStoreId !== null) {
-            $sql .= ' WHERE c.store_id = :store_id';
+            $sql .= ' AND c.store_id = :store_id';
             $params['store_id'] = $scopeStoreId;
         }
-        $sql .= ' ORDER BY c.id DESC';
+        if ($cursor > 0) {
+            $sql .= ' AND c.id < :cursor';
+            $params['cursor'] = $cursor;
+        }
+        $sql .= ' ORDER BY c.id DESC LIMIT ' . $queryLimit;
 
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        foreach ($rows as &$row) {
-            $row['tags'] = self::tagsByCustomerId((int) $row['id']);
+        $hasMore = count($rows) > $limit;
+        if ($hasMore) {
+            $rows = array_slice($rows, 0, $limit);
+        }
+        $nextCursor = null;
+        if ($hasMore && !empty($rows)) {
+            $tail = $rows[count($rows) - 1];
+            $nextCursor = (int) ($tail['id'] ?? 0);
+            if ($nextCursor <= 0) {
+                $nextCursor = null;
+            }
         }
 
-        Response::json(['data' => $rows]);
+        $customerIds = [];
+        foreach ($rows as $row) {
+            $id = (int) ($row['id'] ?? 0);
+            if ($id > 0) {
+                $customerIds[] = $id;
+            }
+        }
+        $tagMap = self::tagsByCustomerIds($customerIds);
+
+        foreach ($rows as &$row) {
+            $customerId = (int) ($row['id'] ?? 0);
+            $row['tags'] = $tagMap[$customerId] ?? [];
+        }
+        unset($row);
+
+        Response::json([
+            'data' => $rows,
+            'pagination' => [
+                'limit' => $limit,
+                'cursor' => $cursor > 0 ? $cursor : null,
+                'next_cursor' => $nextCursor,
+                'has_more' => $hasMore,
+            ],
+        ]);
     }
 
     public static function create(): void
@@ -144,36 +187,14 @@ final class CustomerController
      */
     private static function createDefaultPortalToken(PDO $pdo, int $customerId, int $storeId, int $creatorUserId): array
     {
-        $attempts = 80;
-        for ($i = 0; $i < $attempts; $i++) {
-            $token = self::randomNumericToken();
-            try {
-                return CustomerPortalService::createToken(
-                    $pdo,
-                    $customerId,
-                    $storeId,
-                    $creatorUserId,
-                    null,
-                    'auto create from customer onboarding',
-                    $token
-                );
-            } catch (\RuntimeException $e) {
-                if ($e->getMessage() === 'token already exists') {
-                    continue;
-                }
-                throw $e;
-            }
-        }
-
-        throw new \RuntimeException('create default portal token failed');
-    }
-
-    private static function randomNumericToken(): string
-    {
-        $len = random_int(4, 6);
-        $min = 10 ** ($len - 1);
-        $max = (10 ** $len) - 1;
-        return (string) random_int($min, $max);
+        return CustomerPortalService::createToken(
+            $pdo,
+            $customerId,
+            $storeId,
+            $creatorUserId,
+            null,
+            'auto create from customer onboarding'
+        );
     }
 
     private static function customerPortalUrl(string $token): string
@@ -249,23 +270,58 @@ final class CustomerController
         return (int) $pdo->lastInsertId();
     }
 
-    /** @return array<int, string> */
-    private static function tagsByCustomerId(int $customerId): array
+    /**
+     * @param array<int, int> $customerIds
+     * @return array<int, array<int, string>>
+     */
+    private static function tagsByCustomerIds(array $customerIds): array
     {
-        $stmt = Database::pdo()->prepare(
-            'SELECT t.tag_name
-             FROM qiling_customer_tag_rel r
-             INNER JOIN qiling_customer_tags t ON t.id = r.tag_id
-             WHERE r.customer_id = :customer_id
-             ORDER BY t.id DESC'
-        );
-        $stmt->execute(['customer_id' => $customerId]);
+        $ids = array_values(array_unique(array_filter(array_map(
+            static fn ($id): int => is_numeric($id) ? (int) $id : 0,
+            $customerIds
+        ), static fn (int $id): bool => $id > 0)));
+        if (empty($ids)) {
+            return [];
+        }
 
-        $rows = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        $params = [];
+        $holders = [];
+        foreach ($ids as $i => $id) {
+            $key = 'id' . $i;
+            $holders[] = ':' . $key;
+            $params[$key] = $id;
+        }
+
+        $sql = 'SELECT r.customer_id, t.tag_name
+                FROM qiling_customer_tag_rel r
+                INNER JOIN qiling_customer_tags t ON t.id = r.tag_id
+                WHERE r.customer_id IN (' . implode(',', $holders) . ')
+                ORDER BY r.customer_id ASC, t.id DESC';
+        $stmt = Database::pdo()->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         if (!is_array($rows)) {
             return [];
         }
 
-        return array_values(array_filter(array_map('strval', $rows)));
+        $map = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $customerId = (int) ($row['customer_id'] ?? 0);
+            if ($customerId <= 0) {
+                continue;
+            }
+            if (!array_key_exists($customerId, $map)) {
+                $map[$customerId] = [];
+            }
+            $tagName = trim((string) ($row['tag_name'] ?? ''));
+            if ($tagName !== '') {
+                $map[$customerId][] = $tagName;
+            }
+        }
+
+        return $map;
     }
 }

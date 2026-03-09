@@ -9,6 +9,7 @@ use Qiling\Core\Config;
 use Qiling\Core\Database;
 use Qiling\Core\FollowupService;
 use Qiling\Core\Push\PushService;
+use Qiling\Core\ReportAggregateService;
 use Qiling\Support\Request;
 use Qiling\Support\Response;
 
@@ -184,6 +185,71 @@ final class CronController
         ], $status);
     }
 
+    public static function reportAggregate(): void
+    {
+        self::requireCronKey();
+
+        $input = self::input();
+        [$dateFrom, $dateTo] = self::resolveAggregateDateRange($input);
+        $storeId = Request::int($input, 'store_id', 0);
+        $ttlSeconds = Request::int($input, 'ttl_seconds', 300);
+        $ttlSeconds = max(30, min(86400, $ttlSeconds));
+        $force = self::boolValue($input['force'] ?? null);
+        $scopeStoreId = $storeId > 0 ? $storeId : null;
+
+        try {
+            if ($force) {
+                $result = ReportAggregateService::syncRange(
+                    Database::pdo(),
+                    $dateFrom,
+                    $dateTo,
+                    $scopeStoreId
+                );
+                $mode = 'sync';
+            } else {
+                ReportAggregateService::ensureFreshRange(
+                    Database::pdo(),
+                    $dateFrom,
+                    $dateTo,
+                    $scopeStoreId,
+                    $ttlSeconds
+                );
+                $result = [
+                    'date_from' => $dateFrom,
+                    'date_to' => $dateTo,
+                    'store_id' => $scopeStoreId ?? 0,
+                    'ttl_seconds' => $ttlSeconds,
+                ];
+                $mode = 'ensure_fresh';
+            }
+
+            Audit::log(0, 'cron.report.aggregate', 'report', 0, 'Cron refresh report aggregates', [
+                'date_from' => $dateFrom,
+                'date_to' => $dateTo,
+                'store_id' => $scopeStoreId,
+                'ttl_seconds' => $ttlSeconds,
+                'force' => $force ? 1 : 0,
+                'mode' => $mode,
+            ]);
+
+            Response::json([
+                'ok' => true,
+                'job' => 'report_aggregate',
+                'mode' => $mode,
+                'force' => $force,
+                'date_from' => $dateFrom,
+                'date_to' => $dateTo,
+                'store_id' => $scopeStoreId,
+                'ttl_seconds' => $ttlSeconds,
+                'result' => $result,
+            ]);
+        } catch (\RuntimeException $e) {
+            Response::json(['message' => $e->getMessage()], 422);
+        } catch (\Throwable $e) {
+            Response::serverError('cron report aggregate failed', $e);
+        }
+    }
+
     /** @return array<string, mixed> */
     private static function input(): array
     {
@@ -260,5 +326,56 @@ final class CronController
             'ids' => $ids,
             'provided' => $provided,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @return array{0:string,1:string}
+     */
+    private static function resolveAggregateDateRange(array $input): array
+    {
+        $dateFrom = Request::str($input, 'date_from');
+        $dateTo = Request::str($input, 'date_to');
+        $days = Request::int($input, 'days', 29);
+        $days = max(0, min(366, $days));
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo)) {
+            $dateTo = gmdate('Y-m-d');
+        }
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) {
+            $dateFrom = gmdate('Y-m-d', strtotime('-' . $days . ' days'));
+        }
+
+        $fromTs = strtotime($dateFrom . ' 00:00:00');
+        $toTs = strtotime($dateTo . ' 00:00:00');
+        if ($fromTs === false || $toTs === false) {
+            throw new \RuntimeException('invalid date range');
+        }
+        if ($fromTs > $toTs) {
+            [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
+            [$fromTs, $toTs] = [$toTs, $fromTs];
+        }
+
+        $maxSpanSeconds = 366 * 86400;
+        if (($toTs - $fromTs) > $maxSpanSeconds) {
+            $fromTs = $toTs - $maxSpanSeconds;
+            $dateFrom = gmdate('Y-m-d', $fromTs);
+        }
+
+        return [$dateFrom, $dateTo];
+    }
+
+    private static function boolValue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_numeric($value)) {
+            return (int) $value === 1;
+        }
+        if (is_string($value)) {
+            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+        }
+        return false;
     }
 }

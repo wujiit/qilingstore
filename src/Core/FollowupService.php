@@ -8,6 +8,12 @@ use PDO;
 
 final class FollowupService
 {
+    /** @var array<string, array<string, mixed>|null> */
+    private static array $planCache = [];
+
+    /** @var array<int, string> */
+    private static array $customerNameCache = [];
+
     /**
      * @return array<string, mixed>
      */
@@ -224,6 +230,12 @@ final class FollowupService
      */
     private static function resolvePlan(PDO $pdo, int $storeId, string $triggerType): ?array
     {
+        $cacheKey = $storeId . '|' . $triggerType;
+        if (array_key_exists($cacheKey, self::$planCache)) {
+            $cached = self::$planCache[$cacheKey];
+            return is_array($cached) ? $cached : null;
+        }
+
         $storeStmt = $pdo->prepare(
             'SELECT *
              FROM qiling_followup_plans
@@ -237,6 +249,7 @@ final class FollowupService
         ]);
         $plan = $storeStmt->fetch(PDO::FETCH_ASSOC);
         if (is_array($plan)) {
+            self::$planCache[$cacheKey] = $plan;
             return $plan;
         }
 
@@ -249,8 +262,13 @@ final class FollowupService
         );
         $globalStmt->execute(['trigger_type' => $triggerType]);
         $globalPlan = $globalStmt->fetch(PDO::FETCH_ASSOC);
+        if (is_array($globalPlan)) {
+            self::$planCache[$cacheKey] = $globalPlan;
+            return $globalPlan;
+        }
 
-        return is_array($globalPlan) ? $globalPlan : null;
+        self::$planCache[$cacheKey] = null;
+        return null;
     }
 
     /**
@@ -291,10 +309,19 @@ final class FollowupService
 
     private static function resolveCustomerName(PDO $pdo, int $customerId): string
     {
+        if ($customerId <= 0) {
+            return '';
+        }
+
+        if (array_key_exists($customerId, self::$customerNameCache)) {
+            return self::$customerNameCache[$customerId];
+        }
+
         $stmt = $pdo->prepare('SELECT name FROM qiling_customers WHERE id = :id LIMIT 1');
         $stmt->execute(['id' => $customerId]);
         $name = $stmt->fetchColumn();
-
-        return is_string($name) ? $name : '';
+        $resolved = is_string($name) ? $name : '';
+        self::$customerNameCache[$customerId] = $resolved;
+        return $resolved;
     }
 }

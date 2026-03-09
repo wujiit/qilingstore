@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace Qiling\Core;
 
 use PDO;
+use RuntimeException;
 
 final class CustomerPortalService
 {
+    private const TOKEN_PATTERN = '/^[A-Za-z0-9_-]{16,64}$/';
+
     private static bool $tableReady = false;
 
     public static function ensureTables(PDO $pdo): void
@@ -16,48 +19,38 @@ final class CustomerPortalService
             return;
         }
 
-        $pdo->exec(
-            'CREATE TABLE IF NOT EXISTS qiling_customer_portal_tokens (
-                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-                token_hash CHAR(64) NOT NULL,
-                token_prefix VARCHAR(16) NOT NULL DEFAULT \'\',
-                customer_id BIGINT UNSIGNED NOT NULL,
-                store_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                created_by BIGINT UNSIGNED DEFAULT NULL,
-                note VARCHAR(120) NOT NULL DEFAULT \'\',
-                status VARCHAR(20) NOT NULL DEFAULT \'active\',
-                expire_at DATETIME NULL,
-                last_used_at DATETIME NULL,
-                use_count INT NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                PRIMARY KEY (id),
-                UNIQUE KEY uq_qiling_customer_portal_tokens_hash (token_hash),
-                KEY idx_qiling_customer_portal_tokens_customer_id (customer_id),
-                KEY idx_qiling_customer_portal_tokens_store_id (store_id),
-                KEY idx_qiling_customer_portal_tokens_status (status),
-                KEY idx_qiling_customer_portal_tokens_expire_at (expire_at),
-                CONSTRAINT fk_qiling_customer_portal_tokens_customer FOREIGN KEY (customer_id) REFERENCES qiling_customers(id) ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
-        );
-
-        $pdo->exec(
-            'CREATE TABLE IF NOT EXISTS qiling_customer_portal_ip_guards (
-                ip_address VARCHAR(64) NOT NULL,
-                fail_count INT NOT NULL DEFAULT 0,
-                first_failed_at DATETIME NULL,
-                locked_until DATETIME NULL,
-                window_started_at DATETIME NULL,
-                window_request_count INT NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                PRIMARY KEY (ip_address),
-                KEY idx_qiling_customer_portal_ip_guards_locked_until (locked_until),
-                KEY idx_qiling_customer_portal_ip_guards_window_started_at (window_started_at)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
-        );
+        if (!self::schemaReady($pdo)) {
+            throw new RuntimeException('客户门户数据库结构未升级，请先到系统升级页面执行升级。');
+        }
 
         self::$tableReady = true;
+    }
+
+    private static function schemaReady(PDO $pdo): bool
+    {
+        try {
+            $required = [
+                'qiling_customer_portal_tokens',
+                'qiling_customer_portal_ip_guards',
+            ];
+            $stmt = $pdo->query("SHOW TABLES LIKE 'qiling_customer_portal_%'");
+            $rows = $stmt->fetchAll(PDO::FETCH_NUM);
+            $exists = [];
+            foreach ($rows as $row) {
+                $name = isset($row[0]) ? (string) $row[0] : '';
+                if ($name !== '') {
+                    $exists[$name] = true;
+                }
+            }
+            foreach ($required as $table) {
+                if (!isset($exists[$table])) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     public static function hashToken(string $token): string
@@ -72,10 +65,7 @@ final class CustomerPortalService
 
     public static function generateToken(): string
     {
-        $len = random_int(4, 6);
-        $min = 10 ** ($len - 1);
-        $max = (10 ** $len) - 1;
-        return (string) random_int($min, $max);
+        return rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');
     }
 
     /**
@@ -129,8 +119,8 @@ final class CustomerPortalService
     ): array {
         self::ensureTables($pdo);
         $specifiedToken = trim($customToken);
-        if ($specifiedToken !== '' && !self::isNumericPinToken($specifiedToken)) {
-            throw new \RuntimeException('token must be 4-6 digits');
+        if ($specifiedToken !== '' && !self::isValidCustomToken($specifiedToken)) {
+            throw new \RuntimeException('token must be 16-64 chars (letters, numbers, _ or -)');
         }
         $attempts = $specifiedToken !== '' ? 1 : 240;
 
@@ -183,9 +173,9 @@ final class CustomerPortalService
         throw new \RuntimeException('create token failed');
     }
 
-    private static function isNumericPinToken(string $token): bool
+    private static function isValidCustomToken(string $token): bool
     {
-        return preg_match('/^\d{4,6}$/', $token) === 1;
+        return preg_match(self::TOKEN_PATTERN, $token) === 1;
     }
 
     /**

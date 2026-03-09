@@ -13,7 +13,8 @@ use Qiling\Support\Response;
 
 final class AuthController
 {
-    private static bool $loginSecurityReady = false;
+    /** @var array{has_lock:bool,has_token_version:bool}|null */
+    private static ?array $loginSchema = null;
 
     public static function login(): void
     {
@@ -27,16 +28,29 @@ final class AuthController
         }
 
         $pdo = Database::pdo();
-        self::ensureLoginSecuritySchema($pdo);
+        $schema = self::resolveLoginSchema($pdo);
+        $hasLockSecurity = $schema['has_lock'];
+        $hasTokenVersion = $schema['has_token_version'];
         $now = gmdate('Y-m-d H:i:s');
         $maxFailedAttempts = self::maxFailedAttempts();
         $lockSeconds = self::lockSeconds();
 
         $pdo->beginTransaction();
         try {
+            $columns = 'u.id, u.username, u.email, u.password_hash, u.role_key, u.status';
+            if ($hasLockSecurity) {
+                $columns .= ', u.login_failed_attempts, u.login_lock_until';
+            } else {
+                $columns .= ', 0 AS login_failed_attempts, NULL AS login_lock_until';
+            }
+            if ($hasTokenVersion) {
+                $columns .= ', u.token_version';
+            } else {
+                $columns .= ', 1 AS token_version';
+            }
+
             $stmt = $pdo->prepare(
-                'SELECT u.id, u.username, u.email, u.password_hash, u.role_key, u.status,
-                        u.login_failed_attempts, u.login_lock_until
+                'SELECT ' . $columns . '
                  FROM qiling_users u
                  WHERE u.username = :username
                  LIMIT 1
@@ -47,7 +61,7 @@ final class AuthController
             ]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            if (is_array($user)) {
+            if ($hasLockSecurity && is_array($user)) {
                 $lockUntil = (string) ($user['login_lock_until'] ?? '');
                 if ($lockUntil !== '') {
                     $lockUntilTs = strtotime($lockUntil);
@@ -65,6 +79,12 @@ final class AuthController
 
             if (!is_array($user) || !password_verify($password, (string) $user['password_hash'])) {
                 if (is_array($user)) {
+                    if (!$hasLockSecurity) {
+                        $pdo->commit();
+                        Response::json(['message' => 'invalid credentials'], 401);
+                        return;
+                    }
+
                     $failedAttempts = max(0, (int) ($user['login_failed_attempts'] ?? 0)) + 1;
                     $lockUntil = null;
                     $statusCode = 401;
@@ -110,28 +130,40 @@ final class AuthController
                 return;
             }
 
-            $token = Auth::issueToken((int) $user['id']);
+            $token = Auth::issueToken((int) $user['id'], (int) ($user['token_version'] ?? 1));
             if ($token === '') {
                 $pdo->commit();
                 Response::json(['message' => 'APP_KEY is missing'], 500);
                 return;
             }
 
-            $updateSuccess = $pdo->prepare(
-                'UPDATE qiling_users
-                 SET login_failed_attempts = 0,
-                     login_lock_until = NULL,
-                     last_login_at = :last_login_at,
-                     last_login_ip = :last_login_ip,
-                     updated_at = :updated_at
-                 WHERE id = :id'
-            );
-            $updateSuccess->execute([
-                'last_login_at' => $now,
-                'last_login_ip' => self::resolveClientIp(),
-                'updated_at' => $now,
-                'id' => (int) $user['id'],
-            ]);
+            if ($hasLockSecurity) {
+                $updateSuccess = $pdo->prepare(
+                    'UPDATE qiling_users
+                     SET login_failed_attempts = 0,
+                         login_lock_until = NULL,
+                         last_login_at = :last_login_at,
+                         last_login_ip = :last_login_ip,
+                         updated_at = :updated_at
+                     WHERE id = :id'
+                );
+                $updateSuccess->execute([
+                    'last_login_at' => $now,
+                    'last_login_ip' => self::resolveClientIp(),
+                    'updated_at' => $now,
+                    'id' => (int) $user['id'],
+                ]);
+            } else {
+                $updateSuccess = $pdo->prepare(
+                    'UPDATE qiling_users
+                     SET updated_at = :updated_at
+                     WHERE id = :id'
+                );
+                $updateSuccess->execute([
+                    'updated_at' => $now,
+                    'id' => (int) $user['id'],
+                ]);
+            }
 
             $staffStoreStmt = $pdo->prepare(
                 'SELECT COALESCE(store_id, 0)
@@ -146,6 +178,20 @@ final class AuthController
             ]);
             $staffStoreId = (int) ($staffStoreStmt->fetchColumn() ?: 0);
 
+            $rolePermissionStmt = $pdo->prepare(
+                'SELECT permissions_json
+                 FROM qiling_roles
+                 WHERE role_key = :role_key
+                   AND status = :status
+                 LIMIT 1'
+            );
+            $rolePermissionStmt->execute([
+                'role_key' => (string) ($user['role_key'] ?? ''),
+                'status' => 'active',
+            ]);
+            $permissionsRaw = $rolePermissionStmt->fetchColumn();
+            $permissions = self::decodePermissions($permissionsRaw);
+
             $pdo->commit();
 
             Response::json([
@@ -155,7 +201,9 @@ final class AuthController
                     'username' => $user['username'],
                     'email' => $user['email'],
                     'role_key' => $user['role_key'],
+                    'status' => $user['status'],
                     'staff_store_id' => $staffStoreId,
+                    'permissions' => $permissions,
                 ],
             ]);
         } catch (\Throwable $e) {
@@ -172,27 +220,26 @@ final class AuthController
         Response::json(['user' => $user]);
     }
 
-    private static function ensureLoginSecuritySchema(PDO $pdo): void
+    /**
+     * @return array{has_lock:bool,has_token_version:bool}
+     */
+    private static function resolveLoginSchema(PDO $pdo): array
     {
-        if (self::$loginSecurityReady) {
-            return;
+        if (is_array(self::$loginSchema)) {
+            return self::$loginSchema;
         }
 
-        self::ensureColumn($pdo, 'qiling_users', 'login_failed_attempts', 'INT NOT NULL DEFAULT 0');
-        self::ensureColumn($pdo, 'qiling_users', 'login_lock_until', 'DATETIME NULL');
-        self::ensureColumn($pdo, 'qiling_users', 'last_login_at', 'DATETIME NULL');
-        self::ensureColumn($pdo, 'qiling_users', 'last_login_ip', "VARCHAR(64) NOT NULL DEFAULT ''");
+        $hasLock = self::hasColumn($pdo, 'qiling_users', 'login_failed_attempts')
+            && self::hasColumn($pdo, 'qiling_users', 'login_lock_until')
+            && self::hasColumn($pdo, 'qiling_users', 'last_login_at')
+            && self::hasColumn($pdo, 'qiling_users', 'last_login_ip');
+        $hasTokenVersion = self::hasColumn($pdo, 'qiling_users', 'token_version');
 
-        self::$loginSecurityReady = true;
-    }
-
-    private static function ensureColumn(PDO $pdo, string $table, string $column, string $definition): void
-    {
-        if (self::hasColumn($pdo, $table, $column)) {
-            return;
-        }
-
-        $pdo->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$definition}");
+        self::$loginSchema = [
+            'has_lock' => $hasLock,
+            'has_token_version' => $hasTokenVersion,
+        ];
+        return self::$loginSchema;
     }
 
     private static function hasColumn(PDO $pdo, string $table, string $column): bool
@@ -250,5 +297,33 @@ final class AuthController
         }
 
         return trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private static function decodePermissions(mixed $raw): array
+    {
+        if (!is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $items = [];
+        foreach ($decoded as $item) {
+            if (!is_string($item)) {
+                continue;
+            }
+            $perm = trim($item);
+            if ($perm !== '') {
+                $items[] = $perm;
+            }
+        }
+
+        return array_values(array_unique($items));
     }
 }

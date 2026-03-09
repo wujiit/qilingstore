@@ -8,6 +8,7 @@ use PDO;
 use Qiling\Core\Auth;
 use Qiling\Core\DataScope;
 use Qiling\Core\Database;
+use Qiling\Core\ReportAggregateService;
 use Qiling\Support\Response;
 
 final class ReportController
@@ -19,135 +20,73 @@ final class ReportController
         [$dateFrom, $dateTo, $fromAt, $toAt] = self::resolveDateRange(29);
         $pdo = Database::pdo();
 
-        $paymentSql = 'SELECT
-                SUM(CASE WHEN p.status = \'paid\' AND p.amount > 0 THEN p.amount ELSE 0 END) AS paid_amount,
-                SUM(CASE WHEN p.status = \'refunded\' OR p.amount < 0 THEN ABS(p.amount) ELSE 0 END) AS refund_amount,
-                COUNT(CASE WHEN p.status = \'paid\' AND p.amount > 0 THEN 1 ELSE NULL END) AS paid_txn_count,
-                COUNT(CASE WHEN p.status = \'refunded\' OR p.amount < 0 THEN 1 ELSE NULL END) AS refund_txn_count,
-                COUNT(DISTINCT CASE WHEN p.status = \'paid\' AND p.amount > 0 THEN p.order_id ELSE NULL END) AS paid_orders,
-                COUNT(DISTINCT CASE WHEN p.status = \'refunded\' OR p.amount < 0 THEN p.order_id ELSE NULL END) AS refund_orders
-            FROM qiling_order_payments p
-            INNER JOIN qiling_orders o ON o.id = p.order_id
-            WHERE p.paid_at >= :from_at
-              AND p.paid_at <= :to_at
-              AND p.status IN (\'paid\', \'refunded\')';
-        $paymentParams = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
+        self::ensureAggregates($pdo, $dateFrom, $dateTo, $storeId);
+
+        $storeSummarySql = 'SELECT
+                COALESCE(SUM(paid_amount), 0) AS paid_amount,
+                COALESCE(SUM(refund_amount), 0) AS refund_amount,
+                COALESCE(SUM(paid_txn_count), 0) AS paid_txn_count,
+                COALESCE(SUM(refund_txn_count), 0) AS refund_txn_count,
+                COALESCE(SUM(paid_orders), 0) AS paid_orders,
+                COALESCE(SUM(refund_orders), 0) AS refund_orders,
+                COALESCE(SUM(new_customers), 0) AS new_customers,
+                COALESCE(SUM(appointments_total), 0) AS appointments_total,
+                COALESCE(SUM(appointments_completed), 0) AS appointments_completed,
+                COALESCE(SUM(appointments_cancelled), 0) AS appointments_cancelled,
+                COALESCE(SUM(appointments_no_show), 0) AS appointments_no_show,
+                COALESCE(SUM(card_consumed_sessions), 0) AS card_consumed_sessions
+            FROM qiling_report_daily_store
+            WHERE report_date >= :date_from
+              AND report_date <= :date_to';
+        $storeSummaryParams = [
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
         ];
         if ($storeId !== null) {
-            $paymentSql .= ' AND o.store_id = :store_id';
-            $paymentParams['store_id'] = $storeId;
+            $storeSummarySql .= ' AND store_id = :store_id';
+            $storeSummaryParams['store_id'] = $storeId;
         }
 
-        $paymentStmt = $pdo->prepare($paymentSql);
-        $paymentStmt->execute($paymentParams);
-        $paymentSummary = $paymentStmt->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($paymentSummary)) {
-            $paymentSummary = [];
+        $storeSummaryStmt = $pdo->prepare($storeSummarySql);
+        $storeSummaryStmt->execute($storeSummaryParams);
+        $storeSummary = $storeSummaryStmt->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($storeSummary)) {
+            $storeSummary = [];
         }
 
-        $activeCustomersSql = 'SELECT COUNT(DISTINCT o.customer_id)
-            FROM qiling_order_payments p
-            INNER JOIN qiling_orders o ON o.id = p.order_id
-            WHERE p.status = \'paid\'
-              AND p.amount > 0
-              AND p.paid_at >= :from_at
-              AND p.paid_at <= :to_at';
-        $activeCustomersParams = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
-        ];
-        if ($storeId !== null) {
-            $activeCustomersSql .= ' AND o.store_id = :store_id';
-            $activeCustomersParams['store_id'] = $storeId;
-        }
-        $activeStmt = $pdo->prepare($activeCustomersSql);
-        $activeStmt->execute($activeCustomersParams);
-        $activeCustomers = (int) $activeStmt->fetchColumn();
-
-        $newCustomersSql = 'SELECT COUNT(*) FROM qiling_customers WHERE created_at >= :from_at AND created_at <= :to_at';
-        $newCustomersParams = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
-        ];
-        if ($storeId !== null) {
-            $newCustomersSql .= ' AND store_id = :store_id';
-            $newCustomersParams['store_id'] = $storeId;
-        }
-        $newCustomersStmt = $pdo->prepare($newCustomersSql);
-        $newCustomersStmt->execute($newCustomersParams);
-        $newCustomers = (int) $newCustomersStmt->fetchColumn();
-
-        $repurchaseSql = 'SELECT COUNT(*)
+        $customerStatsSql = 'SELECT
+                COUNT(*) AS active_customers,
+                SUM(CASE WHEN order_count >= 2 THEN 1 ELSE 0 END) AS repurchase_customers
             FROM (
-                SELECT o.customer_id
-                FROM qiling_order_payments p
-                INNER JOIN qiling_orders o ON o.id = p.order_id
-                WHERE p.status = \'paid\'
-                  AND p.amount > 0
-                  AND p.paid_at >= :from_at
-                  AND p.paid_at <= :to_at';
-        $repurchaseParams = [
+                SELECT o.customer_id, COUNT(o.id) AS order_count
+                FROM qiling_orders o
+                WHERE o.status = :status_paid
+                  AND o.paid_at >= :from_at
+                  AND o.paid_at <= :to_at';
+        $customerStatsParams = [
+            'status_paid' => 'paid',
             'from_at' => $fromAt,
             'to_at' => $toAt,
         ];
         if ($storeId !== null) {
-            $repurchaseSql .= ' AND o.store_id = :store_id';
-            $repurchaseParams['store_id'] = $storeId;
+            $customerStatsSql .= ' AND o.store_id = :store_id';
+            $customerStatsParams['store_id'] = $storeId;
         }
-        $repurchaseSql .= ' GROUP BY o.customer_id
-                HAVING COUNT(DISTINCT o.id) >= 2
-            ) repurchase_customers';
-
-        $repurchaseStmt = $pdo->prepare($repurchaseSql);
-        $repurchaseStmt->execute($repurchaseParams);
-        $repurchaseCustomers = (int) $repurchaseStmt->fetchColumn();
-
-        $appointmentSql = 'SELECT
-                COUNT(*) AS appointments_total,
-                SUM(CASE WHEN status = \'completed\' THEN 1 ELSE 0 END) AS appointments_completed,
-                SUM(CASE WHEN status = \'cancelled\' THEN 1 ELSE 0 END) AS appointments_cancelled,
-                SUM(CASE WHEN status = \'no_show\' THEN 1 ELSE 0 END) AS appointments_no_show
-            FROM qiling_appointments
-            WHERE start_at >= :from_at
-              AND start_at <= :to_at';
-        $appointmentParams = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
-        ];
-        if ($storeId !== null) {
-            $appointmentSql .= ' AND store_id = :store_id';
-            $appointmentParams['store_id'] = $storeId;
+        $customerStatsSql .= ' GROUP BY o.customer_id
+            ) customer_orders';
+        $customerStatsStmt = $pdo->prepare($customerStatsSql);
+        $customerStatsStmt->execute($customerStatsParams);
+        $customerStats = $customerStatsStmt->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($customerStats)) {
+            $customerStats = [];
         }
-        $appointmentStmt = $pdo->prepare($appointmentSql);
-        $appointmentStmt->execute($appointmentParams);
-        $appointmentSummary = $appointmentStmt->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($appointmentSummary)) {
-            $appointmentSummary = [];
-        }
+        $activeCustomers = (int) ($customerStats['active_customers'] ?? 0);
+        $repurchaseCustomers = (int) ($customerStats['repurchase_customers'] ?? 0);
 
-        $cardConsumeSql = 'SELECT COALESCE(SUM(CASE WHEN l.delta_sessions < 0 THEN ABS(l.delta_sessions) ELSE 0 END), 0)
-            FROM qiling_member_card_logs l
-            INNER JOIN qiling_member_cards mc ON mc.id = l.member_card_id
-            WHERE l.created_at >= :from_at
-              AND l.created_at <= :to_at';
-        $cardConsumeParams = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
-        ];
-        if ($storeId !== null) {
-            $cardConsumeSql .= ' AND mc.store_id = :store_id';
-            $cardConsumeParams['store_id'] = $storeId;
-        }
-        $cardConsumeStmt = $pdo->prepare($cardConsumeSql);
-        $cardConsumeStmt->execute($cardConsumeParams);
-        $cardConsumedSessions = (int) $cardConsumeStmt->fetchColumn();
-
-        $paidAmount = round((float) ($paymentSummary['paid_amount'] ?? 0), 2);
-        $refundAmount = round((float) ($paymentSummary['refund_amount'] ?? 0), 2);
+        $paidAmount = round((float) ($storeSummary['paid_amount'] ?? 0), 2);
+        $refundAmount = round((float) ($storeSummary['refund_amount'] ?? 0), 2);
         $netAmount = round($paidAmount - $refundAmount, 2);
-        $paidOrders = (int) ($paymentSummary['paid_orders'] ?? 0);
+        $paidOrders = (int) ($storeSummary['paid_orders'] ?? 0);
         $avgOrderAmount = $paidOrders > 0 ? round($paidAmount / $paidOrders, 2) : 0.00;
         $repurchaseRate = $activeCustomers > 0 ? round($repurchaseCustomers * 100 / $activeCustomers, 2) : 0.00;
 
@@ -159,19 +98,19 @@ final class ReportController
                 'refund_amount' => $refundAmount,
                 'net_amount' => $netAmount,
                 'paid_orders' => $paidOrders,
-                'refund_orders' => (int) ($paymentSummary['refund_orders'] ?? 0),
-                'paid_txn_count' => (int) ($paymentSummary['paid_txn_count'] ?? 0),
-                'refund_txn_count' => (int) ($paymentSummary['refund_txn_count'] ?? 0),
+                'refund_orders' => (int) ($storeSummary['refund_orders'] ?? 0),
+                'paid_txn_count' => (int) ($storeSummary['paid_txn_count'] ?? 0),
+                'refund_txn_count' => (int) ($storeSummary['refund_txn_count'] ?? 0),
                 'avg_order_amount' => $avgOrderAmount,
                 'active_customers' => $activeCustomers,
-                'new_customers' => $newCustomers,
+                'new_customers' => (int) ($storeSummary['new_customers'] ?? 0),
                 'repurchase_customers' => $repurchaseCustomers,
                 'repurchase_rate' => $repurchaseRate,
-                'appointments_total' => (int) ($appointmentSummary['appointments_total'] ?? 0),
-                'appointments_completed' => (int) ($appointmentSummary['appointments_completed'] ?? 0),
-                'appointments_cancelled' => (int) ($appointmentSummary['appointments_cancelled'] ?? 0),
-                'appointments_no_show' => (int) ($appointmentSummary['appointments_no_show'] ?? 0),
-                'card_consumed_sessions' => $cardConsumedSessions,
+                'appointments_total' => (int) ($storeSummary['appointments_total'] ?? 0),
+                'appointments_completed' => (int) ($storeSummary['appointments_completed'] ?? 0),
+                'appointments_cancelled' => (int) ($storeSummary['appointments_cancelled'] ?? 0),
+                'appointments_no_show' => (int) ($storeSummary['appointments_no_show'] ?? 0),
+                'card_consumed_sessions' => (int) ($storeSummary['card_consumed_sessions'] ?? 0),
             ],
         ]);
     }
@@ -180,52 +119,35 @@ final class ReportController
     {
         $user = Auth::requireUser(Auth::userFromBearerToken());
         $storeId = self::resolveStoreId($user);
-        [$dateFrom, $dateTo, $fromAt, $toAt] = self::resolveDateRange(29);
+        [$dateFrom, $dateTo] = self::resolveDateRange(29);
         $pdo = Database::pdo();
 
+        self::ensureAggregates($pdo, $dateFrom, $dateTo, $storeId);
+
         $trendSql = 'SELECT
-                DATE(p.paid_at) AS report_date,
-                SUM(CASE WHEN p.status = \'paid\' AND p.amount > 0 THEN p.amount ELSE 0 END) AS paid_amount,
-                SUM(CASE WHEN p.status = \'refunded\' OR p.amount < 0 THEN ABS(p.amount) ELSE 0 END) AS refund_amount,
-                COUNT(DISTINCT CASE WHEN p.status = \'paid\' AND p.amount > 0 THEN p.order_id ELSE NULL END) AS paid_orders,
-                COUNT(DISTINCT CASE WHEN p.status = \'paid\' AND p.amount > 0 THEN o.customer_id ELSE NULL END) AS paid_customers
-            FROM qiling_order_payments p
-            INNER JOIN qiling_orders o ON o.id = p.order_id
-            WHERE p.paid_at >= :from_at
-              AND p.paid_at <= :to_at
-              AND p.status IN (\'paid\', \'refunded\')';
+                report_date,
+                COALESCE(SUM(paid_amount), 0) AS paid_amount,
+                COALESCE(SUM(refund_amount), 0) AS refund_amount,
+                COALESCE(SUM(paid_orders), 0) AS paid_orders,
+                COALESCE(SUM(paid_customers), 0) AS paid_customers,
+                COALESCE(SUM(new_customers), 0) AS new_customers
+            FROM qiling_report_daily_store
+            WHERE report_date >= :date_from
+              AND report_date <= :date_to';
         $trendParams = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
         ];
         if ($storeId !== null) {
-            $trendSql .= ' AND o.store_id = :store_id';
+            $trendSql .= ' AND store_id = :store_id';
             $trendParams['store_id'] = $storeId;
         }
-        $trendSql .= ' GROUP BY DATE(p.paid_at)
+        $trendSql .= ' GROUP BY report_date
             ORDER BY report_date ASC';
 
         $trendStmt = $pdo->prepare($trendSql);
         $trendStmt->execute($trendParams);
         $trendRows = $trendStmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $newCustomerSql = 'SELECT DATE(created_at) AS report_date, COUNT(*) AS new_customers
-            FROM qiling_customers
-            WHERE created_at >= :from_at
-              AND created_at <= :to_at';
-        $newCustomerParams = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
-        ];
-        if ($storeId !== null) {
-            $newCustomerSql .= ' AND store_id = :store_id';
-            $newCustomerParams['store_id'] = $storeId;
-        }
-        $newCustomerSql .= ' GROUP BY DATE(created_at)';
-
-        $newCustomerStmt = $pdo->prepare($newCustomerSql);
-        $newCustomerStmt->execute($newCustomerParams);
-        $newCustomerRows = $newCustomerStmt->fetchAll(PDO::FETCH_ASSOC);
 
         $trendMap = [];
         foreach ($trendRows as $row) {
@@ -238,16 +160,8 @@ final class ReportController
                 'refund_amount' => round((float) ($row['refund_amount'] ?? 0), 2),
                 'paid_orders' => (int) ($row['paid_orders'] ?? 0),
                 'paid_customers' => (int) ($row['paid_customers'] ?? 0),
+                'new_customers' => (int) ($row['new_customers'] ?? 0),
             ];
-        }
-
-        $newCustomerMap = [];
-        foreach ($newCustomerRows as $row) {
-            $dateKey = (string) ($row['report_date'] ?? '');
-            if ($dateKey === '') {
-                continue;
-            }
-            $newCustomerMap[$dateKey] = (int) ($row['new_customers'] ?? 0);
         }
 
         $data = [];
@@ -271,12 +185,13 @@ final class ReportController
                 'refund_amount' => 0.0,
                 'paid_orders' => 0,
                 'paid_customers' => 0,
+                'new_customers' => 0,
             ];
 
             $paidAmount = (float) $row['paid_amount'];
             $refundAmount = (float) $row['refund_amount'];
             $netAmount = round($paidAmount - $refundAmount, 2);
-            $newCustomers = (int) ($newCustomerMap[$dateKey] ?? 0);
+            $newCustomers = (int) ($row['new_customers'] ?? 0);
 
             $data[] = [
                 'report_date' => $dateKey,
@@ -314,100 +229,34 @@ final class ReportController
     {
         $user = Auth::requireUser(Auth::userFromBearerToken());
         $storeId = self::resolveStoreId($user);
-        [$dateFrom, $dateTo, $fromAt, $toAt] = self::resolveDateRange(29);
+        [$dateFrom, $dateTo] = self::resolveDateRange(29);
         $pdo = Database::pdo();
 
-        $channelNewSql = 'SELECT
-                COALESCE(NULLIF(TRIM(source_channel), \'\'), \'未标记\') AS source_channel,
-                COUNT(*) AS new_customers
-            FROM qiling_customers
-            WHERE created_at >= :from_at
-              AND created_at <= :to_at';
-        $channelNewParams = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
+        self::ensureAggregates($pdo, $dateFrom, $dateTo, $storeId);
+
+        $sql = 'SELECT
+                source_channel,
+                COALESCE(SUM(new_customers), 0) AS new_customers,
+                COALESCE(SUM(paid_customers), 0) AS paid_customers,
+                COALESCE(SUM(paid_orders), 0) AS paid_orders,
+                COALESCE(SUM(paid_amount), 0) AS paid_amount,
+                COALESCE(SUM(refund_amount), 0) AS refund_amount
+            FROM qiling_report_daily_channel
+            WHERE report_date >= :date_from
+              AND report_date <= :date_to';
+        $params = [
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
         ];
         if ($storeId !== null) {
-            $channelNewSql .= ' AND store_id = :store_id';
-            $channelNewParams['store_id'] = $storeId;
+            $sql .= ' AND store_id = :store_id';
+            $params['store_id'] = $storeId;
         }
-        $channelNewSql .= ' GROUP BY COALESCE(NULLIF(TRIM(source_channel), \'\'), \'未标记\')';
+        $sql .= ' GROUP BY source_channel';
 
-        $channelNewStmt = $pdo->prepare($channelNewSql);
-        $channelNewStmt->execute($channelNewParams);
-        $channelNewRows = $channelNewStmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $channelSalesSql = 'SELECT
-                COALESCE(NULLIF(TRIM(c.source_channel), \'\'), \'未标记\') AS source_channel,
-                COUNT(DISTINCT CASE WHEN p.status = \'paid\' AND p.amount > 0 THEN p.order_id ELSE NULL END) AS paid_orders,
-                COUNT(DISTINCT CASE WHEN p.status = \'paid\' AND p.amount > 0 THEN o.customer_id ELSE NULL END) AS paid_customers,
-                SUM(CASE WHEN p.status = \'paid\' AND p.amount > 0 THEN p.amount ELSE 0 END) AS paid_amount,
-                SUM(CASE WHEN p.status = \'refunded\' OR p.amount < 0 THEN ABS(p.amount) ELSE 0 END) AS refund_amount
-            FROM qiling_order_payments p
-            INNER JOIN qiling_orders o ON o.id = p.order_id
-            INNER JOIN qiling_customers c ON c.id = o.customer_id
-            WHERE p.paid_at >= :from_at
-              AND p.paid_at <= :to_at
-              AND p.status IN (\'paid\', \'refunded\')';
-        $channelSalesParams = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
-        ];
-        if ($storeId !== null) {
-            $channelSalesSql .= ' AND o.store_id = :store_id';
-            $channelSalesParams['store_id'] = $storeId;
-        }
-        $channelSalesSql .= ' GROUP BY COALESCE(NULLIF(TRIM(c.source_channel), \'\'), \'未标记\')';
-
-        $channelSalesStmt = $pdo->prepare($channelSalesSql);
-        $channelSalesStmt->execute($channelSalesParams);
-        $channelSalesRows = $channelSalesStmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $merged = [];
-
-        foreach ($channelNewRows as $row) {
-            $channel = (string) ($row['source_channel'] ?? self::UNKNOWN_CHANNEL);
-            $merged[$channel] = [
-                'source_channel' => $channel,
-                'new_customers' => (int) ($row['new_customers'] ?? 0),
-                'paid_customers' => 0,
-                'paid_orders' => 0,
-                'paid_amount' => 0.0,
-                'refund_amount' => 0.0,
-                'net_amount' => 0.0,
-                'avg_order_amount' => 0.0,
-                'conversion_rate' => 0.0,
-            ];
-        }
-
-        foreach ($channelSalesRows as $row) {
-            $channel = (string) ($row['source_channel'] ?? self::UNKNOWN_CHANNEL);
-            if (!isset($merged[$channel])) {
-                $merged[$channel] = [
-                    'source_channel' => $channel,
-                    'new_customers' => 0,
-                    'paid_customers' => 0,
-                    'paid_orders' => 0,
-                    'paid_amount' => 0.0,
-                    'refund_amount' => 0.0,
-                    'net_amount' => 0.0,
-                    'avg_order_amount' => 0.0,
-                    'conversion_rate' => 0.0,
-                ];
-            }
-
-            $paidAmount = round((float) ($row['paid_amount'] ?? 0), 2);
-            $refundAmount = round((float) ($row['refund_amount'] ?? 0), 2);
-            $paidOrders = (int) ($row['paid_orders'] ?? 0);
-            $paidCustomers = (int) ($row['paid_customers'] ?? 0);
-
-            $merged[$channel]['paid_orders'] = $paidOrders;
-            $merged[$channel]['paid_customers'] = $paidCustomers;
-            $merged[$channel]['paid_amount'] = $paidAmount;
-            $merged[$channel]['refund_amount'] = $refundAmount;
-            $merged[$channel]['net_amount'] = round($paidAmount - $refundAmount, 2);
-            $merged[$channel]['avg_order_amount'] = $paidOrders > 0 ? round($paidAmount / $paidOrders, 2) : 0.0;
-        }
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         $summary = [
             'channels' => 0,
@@ -419,18 +268,30 @@ final class ReportController
             'net_amount' => 0.0,
         ];
 
-        $rows = array_values($merged);
         foreach ($rows as &$row) {
+            $row['source_channel'] = trim((string) ($row['source_channel'] ?? '')) ?: self::UNKNOWN_CHANNEL;
             $newCustomers = (int) ($row['new_customers'] ?? 0);
             $paidCustomers = (int) ($row['paid_customers'] ?? 0);
+            $paidOrders = (int) ($row['paid_orders'] ?? 0);
+            $paidAmount = round((float) ($row['paid_amount'] ?? 0), 2);
+            $refundAmount = round((float) ($row['refund_amount'] ?? 0), 2);
+
+            $row['new_customers'] = $newCustomers;
+            $row['paid_customers'] = $paidCustomers;
+            $row['paid_orders'] = $paidOrders;
+            $row['paid_amount'] = $paidAmount;
+            $row['refund_amount'] = $refundAmount;
+            $row['net_amount'] = round($paidAmount - $refundAmount, 2);
+            $row['avg_order_amount'] = $paidOrders > 0 ? round($paidAmount / $paidOrders, 2) : 0.0;
             $row['conversion_rate'] = $newCustomers > 0 ? round($paidCustomers * 100 / $newCustomers, 2) : 0.0;
 
             $summary['new_customers'] += $newCustomers;
             $summary['paid_customers'] += $paidCustomers;
-            $summary['paid_orders'] += (int) ($row['paid_orders'] ?? 0);
-            $summary['paid_amount'] += (float) ($row['paid_amount'] ?? 0);
-            $summary['refund_amount'] += (float) ($row['refund_amount'] ?? 0);
+            $summary['paid_orders'] += $paidOrders;
+            $summary['paid_amount'] += $paidAmount;
+            $summary['refund_amount'] += $refundAmount;
         }
+        unset($row);
 
         usort($rows, static function (array $a, array $b): int {
             $aNet = (float) ($a['net_amount'] ?? 0);
@@ -458,44 +319,40 @@ final class ReportController
     {
         $user = Auth::requireUser(Auth::userFromBearerToken());
         $storeId = self::resolveStoreId($user);
-        [$dateFrom, $dateTo, $fromAt, $toAt] = self::resolveDateRange(29);
+        [$dateFrom, $dateTo] = self::resolveDateRange(29);
+        $pdo = Database::pdo();
 
         $limit = isset($_GET['limit']) && is_numeric($_GET['limit']) ? (int) $_GET['limit'] : 20;
         $limit = max(1, min(100, $limit));
 
+        self::ensureAggregates($pdo, $dateFrom, $dateTo, $storeId);
+
         $sql = 'SELECT
-                oi.item_type,
-                COALESCE(oi.item_ref_id, 0) AS item_ref_id,
-                oi.item_name,
-                SUM(oi.qty) AS total_qty,
-                COUNT(oi.id) AS item_lines,
-                COUNT(DISTINCT oi.order_id) AS order_count,
-                SUM(oi.final_amount) AS sales_amount,
-                SUM(oi.commission_amount) AS commission_amount
-            FROM qiling_order_items oi
-            INNER JOIN (
-                SELECT DISTINCT p.order_id
-                FROM qiling_order_payments p
-                INNER JOIN qiling_orders oo ON oo.id = p.order_id
-                WHERE p.status = \'paid\'
-                  AND p.amount > 0
-                  AND p.paid_at >= :from_at
-                  AND p.paid_at <= :to_at';
+                item_type,
+                item_ref_id,
+                item_name,
+                COALESCE(SUM(total_qty), 0) AS total_qty,
+                COALESCE(SUM(item_lines), 0) AS item_lines,
+                COALESCE(SUM(order_count), 0) AS order_count,
+                COALESCE(SUM(sales_amount), 0) AS sales_amount,
+                COALESCE(SUM(commission_amount), 0) AS commission_amount
+            FROM qiling_report_daily_service
+            WHERE report_date >= :date_from
+              AND report_date <= :date_to';
         $params = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
         ];
         if ($storeId !== null) {
-            $sql .= ' AND oo.store_id = :store_id';
+            $sql .= ' AND store_id = :store_id';
             $params['store_id'] = $storeId;
         }
 
-        $sql .= ' ) paid_orders ON paid_orders.order_id = oi.order_id
-            GROUP BY oi.item_type, COALESCE(oi.item_ref_id, 0), oi.item_name
+        $sql .= ' GROUP BY item_type, item_ref_id, item_name
             ORDER BY sales_amount DESC, total_qty DESC
             LIMIT ' . $limit;
 
-        $stmt = Database::pdo()->prepare($sql);
+        $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -623,37 +480,36 @@ final class ReportController
 
         $storeId = self::resolveStoreId($user);
         [$dateFrom, $dateTo, $fromAt, $toAt] = self::resolveDateRange(6);
+        $pdo = Database::pdo();
 
-        $sql = 'SELECT o.store_id,
-                       DATE(o.paid_at) AS report_date,
+        self::ensureAggregates($pdo, $dateFrom, $dateTo, $storeId);
+
+        $sql = 'SELECT ds.store_id,
+                       ds.report_date,
                        s.store_name,
-                       COUNT(o.id) AS paid_orders,
-                       SUM(o.payable_amount) AS paid_amount,
-                       COUNT(DISTINCT o.customer_id) AS paid_customers
-                FROM qiling_orders o
-                LEFT JOIN qiling_stores s ON s.id = o.store_id
-                WHERE o.status = :status_paid
-                  AND o.paid_at >= :from_at
-                  AND o.paid_at <= :to_at';
+                       ds.paid_orders,
+                       ds.paid_amount,
+                       ds.paid_customers,
+                       ds.new_customers
+                FROM qiling_report_daily_store ds
+                LEFT JOIN qiling_stores s ON s.id = ds.store_id
+                WHERE ds.report_date >= :date_from
+                  AND ds.report_date <= :date_to';
         $params = [
-            'status_paid' => 'paid',
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
         ];
 
         if ($storeId !== null) {
-            $sql .= ' AND o.store_id = :store_id';
+            $sql .= ' AND ds.store_id = :store_id';
             $params['store_id'] = $storeId;
         }
 
-        $sql .= ' GROUP BY o.store_id, DATE(o.paid_at), s.store_name
-                  ORDER BY report_date DESC, o.store_id ASC';
+        $sql .= ' ORDER BY ds.report_date DESC, ds.store_id ASC';
 
-        $stmt = Database::pdo()->prepare($sql);
+        $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $newCustomersMap = self::newCustomersMap(Database::pdo(), $fromAt, $toAt, $storeId);
 
         $summary = [
             'days' => count($rows),
@@ -664,9 +520,10 @@ final class ReportController
         ];
 
         foreach ($rows as &$row) {
-            $key = (string) ($row['store_id'] ?? 0) . '#' . (string) ($row['report_date'] ?? '');
-            $row['new_customers'] = (int) ($newCustomersMap[$key] ?? 0);
+            $row['paid_orders'] = (int) ($row['paid_orders'] ?? 0);
             $row['paid_amount'] = round((float) ($row['paid_amount'] ?? 0), 2);
+            $row['paid_customers'] = (int) ($row['paid_customers'] ?? 0);
+            $row['new_customers'] = (int) ($row['new_customers'] ?? 0);
             $row['avg_order_amount'] = (int) ($row['paid_orders'] ?? 0) > 0
                 ? round((float) $row['paid_amount'] / (int) $row['paid_orders'], 2)
                 : 0.00;
@@ -675,8 +532,9 @@ final class ReportController
             $summary['paid_amount'] += (float) ($row['paid_amount'] ?? 0);
             $summary['new_customers'] += (int) ($row['new_customers'] ?? 0);
         }
+        unset($row);
 
-        $summary['paid_customers'] = self::uniquePaidCustomers(Database::pdo(), $fromAt, $toAt, $storeId);
+        $summary['paid_customers'] = self::uniquePaidCustomers($pdo, $fromAt, $toAt, $storeId);
         $summary['paid_amount'] = round($summary['paid_amount'], 2);
 
         Response::json([
@@ -754,40 +612,6 @@ final class ReportController
         ]);
     }
 
-    /**
-     * @return array<string, int>
-     */
-    private static function newCustomersMap(PDO $pdo, string $fromAt, string $toAt, ?int $storeId): array
-    {
-        $sql = 'SELECT store_id, DATE(created_at) AS created_date, COUNT(id) AS total
-                FROM qiling_customers
-                WHERE created_at >= :from_at
-                  AND created_at <= :to_at';
-        $params = [
-            'from_at' => $fromAt,
-            'to_at' => $toAt,
-        ];
-
-        if ($storeId !== null) {
-            $sql .= ' AND store_id = :store_id';
-            $params['store_id'] = $storeId;
-        }
-
-        $sql .= ' GROUP BY store_id, DATE(created_at)';
-
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($params);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $map = [];
-        foreach ($rows as $row) {
-            $key = (string) ($row['store_id'] ?? 0) . '#' . (string) ($row['created_date'] ?? '');
-            $map[$key] = (int) ($row['total'] ?? 0);
-        }
-
-        return $map;
-    }
-
     private static function uniquePaidCustomers(PDO $pdo, string $fromAt, string $toAt, ?int $storeId): int
     {
         $sql = 'SELECT COUNT(DISTINCT o.customer_id)
@@ -810,6 +634,40 @@ final class ReportController
         $stmt->execute($params);
 
         return (int) $stmt->fetchColumn();
+    }
+
+    private static function ensureAggregates(PDO $pdo, string $dateFrom, string $dateTo, ?int $storeId): void
+    {
+        $ttlSeconds = isset($_GET['ttl_seconds']) && is_numeric($_GET['ttl_seconds'])
+            ? (int) $_GET['ttl_seconds']
+            : 300;
+        $ttlSeconds = max(30, min(86400, $ttlSeconds));
+
+        if (self::queryBool('force')) {
+            ReportAggregateService::syncRange($pdo, $dateFrom, $dateTo, $storeId);
+            return;
+        }
+
+        ReportAggregateService::ensureFreshRange($pdo, $dateFrom, $dateTo, $storeId, $ttlSeconds);
+    }
+
+    private static function queryBool(string $key): bool
+    {
+        if (!array_key_exists($key, $_GET)) {
+            return false;
+        }
+        $raw = $_GET[$key];
+
+        if (is_bool($raw)) {
+            return $raw;
+        }
+        if (is_numeric($raw)) {
+            return (int) $raw === 1;
+        }
+        if (is_string($raw)) {
+            return in_array(strtolower(trim($raw)), ['1', 'true', 'yes', 'on'], true);
+        }
+        return false;
     }
 
     private static function resolveStoreId(array $user): ?int

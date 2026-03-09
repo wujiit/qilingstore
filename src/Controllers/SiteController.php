@@ -38,8 +38,9 @@ final class SiteController
 
         $rootPath = self::rootPath();
         $publicDir = dirname(__DIR__, 2) . '/public';
-        $cssVersion = self::assetVersion($publicDir . '/assets/site.css');
-        $jsVersion = self::assetVersion($publicDir . '/assets/site.js');
+        $assetSeed = self::assetVersionSeed($settings);
+        $cssVersion = self::assetVersion($publicDir . '/assets/site.css', $assetSeed);
+        $jsVersion = self::assetVersion($publicDir . '/assets/site.js', $assetSeed);
         $cssUrl = $rootPath . '/assets/site.css?v=' . $cssVersion;
         $jsUrl = $rootPath . '/assets/site.js?v=' . $jsVersion;
         $title = '启灵医美养生门店系统';
@@ -111,7 +112,7 @@ final class SiteController
         echo '</section>';
 
         echo '<section id="workflow" class="block reveal">';
-        echo '<div class="block-head"><h2>服务流程可视化</h2><p>把一线动作变成可执行、可追踪、可复盘的标准流程。</p></div>';
+        echo '<div class="block-head"><h2>服务流程展示</h2><p>把一线动作变成可执行、可追踪、可复盘的标准流程。</p></div>';
         echo '<div class="workflow-grid">';
         echo '<article class="workflow-step"><span>01</span><h3>客户建档</h3><p>来源、标签、基础信息完整录入，形成后续服务基础。</p></article>';
         echo '<article class="workflow-step"><span>02</span><h3>预约排程</h3><p>按门店与员工排班，冲突检测自动识别，减少沟通成本。</p></article>';
@@ -173,8 +174,9 @@ final class SiteController
 
         $rootPath = self::rootPath();
         $publicDir = dirname(__DIR__, 2) . '/public';
-        $cssVersion = self::assetVersion($publicDir . '/admin/assets/admin.css');
-        $jsVersion = self::assetVersion($publicDir . '/admin/assets/admin.js');
+        $assetSeed = self::assetVersionSeed($settings);
+        $cssVersion = self::assetVersion($publicDir . '/admin/assets/admin.css', $assetSeed);
+        $jsVersion = self::assetVersion($publicDir . '/admin/assets/admin.js', $assetSeed);
         $cssUrl = $rootPath . '/admin/assets/admin.css?v=' . $cssVersion;
         $jsUrl = $rootPath . '/admin/assets/admin.js?v=' . $jsVersion;
         $rootPathJson = json_encode($rootPath, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -198,7 +200,10 @@ final class SiteController
         echo '<label><span>账号</span><input type="text" id="loginUsername" placeholder="admin" required></label>';
         echo '<label><span>密码</span><input type="password" id="loginPassword" placeholder="请输入密码" required></label>';
         echo '<button type="submit" class="btn btn-primary" id="loginBtn">登录后台</button>';
-        echo '</form><p class="hint">请使用安装时设置的管理员账号登录</p></section></main>';
+        echo '</form>';
+        echo '<div class="login-extra"><button type="button" class="btn btn-line" id="forgotPwdBtn">忘记密码（邮箱找回）</button></div>';
+        echo '<p class="hint">请使用安装时设置的管理员账号登录。若忘记密码，可使用邮箱找回或应急恢复文件。</p>';
+        echo '</section></main>';
         echo '<main id="appScreen" class="screen app-screen hidden"><aside class="sidebar"><div class="brand"><p class="chip">QILING</p><h2>医美养生后台</h2></div>';
         echo '<nav id="navList" class="nav-list"></nav><div class="sidebar-footer"><small>v1 控制台</small></div></aside>';
         echo '<section class="workspace"><header class="topbar"><div><h1 id="viewTitle">控制台</h1><p id="viewSubtitle">实时连接业务 API</p></div>';
@@ -216,8 +221,9 @@ final class SiteController
 
         $rootPath = self::rootPath();
         $publicDir = dirname(__DIR__, 2) . '/public';
-        $cssVersion = self::assetVersion($publicDir . '/customer/assets/customer.css');
-        $jsVersion = self::assetVersion($publicDir . '/customer/assets/customer.js');
+        $assetSeed = self::assetVersionSeed($settings);
+        $cssVersion = self::assetVersion($publicDir . '/customer/assets/customer.css', $assetSeed);
+        $jsVersion = self::assetVersion($publicDir . '/customer/assets/customer.js', $assetSeed);
         $cssUrl = $rootPath . '/customer/assets/customer.css?v=' . $cssVersion;
         $jsUrl = $rootPath . '/customer/assets/customer.js?v=' . $jsVersion;
         $rootPathJson = json_encode($rootPath, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -255,6 +261,54 @@ final class SiteController
         echo '</body></html>';
     }
 
+    public static function crmAdminEntry(): void
+    {
+        $settings = self::loadSettingsSafe();
+        self::applySecurityHeaders($settings);
+
+        $rootPath = self::rootPath();
+        $publicDir = dirname(__DIR__, 2) . '/public';
+        $assetSeed = self::assetVersionSeed($settings);
+        $cssVersion = self::assetVersion($publicDir . '/crm-admin/assets/crm-admin.css', $assetSeed);
+        $jsVersion = self::assetVersion($publicDir . '/crm-admin/assets/crm-admin.js', $assetSeed);
+        $cssUrl = $rootPath . '/crm-admin/assets/crm-admin.css?v=' . $cssVersion;
+        $jsUrl = $rootPath . '/crm-admin/assets/crm-admin.js?v=' . $jsVersion;
+        $rootPathJson = json_encode($rootPath, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        http_response_code(200);
+        header('Content-Type: text/html; charset=utf-8');
+        header('X-Robots-Tag: noindex, nofollow');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+
+        echo '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8">';
+        echo '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+        echo '<title>启灵 CRM 后台</title>';
+        echo '<link rel="stylesheet" href="' . self::h($cssUrl) . '">';
+        echo '</head><body>';
+        echo '<div id="toastContainer" class="toast-container" aria-live="polite"></div>';
+        echo '<main id="loginScreen" class="screen login-screen">';
+        echo '<section class="login-card"><p class="chip">QILING CRM</p><h1>CRM 独立后台</h1>';
+        echo '<p class="sub">共享账号登录，数据与门店会员业务独立</p>';
+        echo '<form id="loginForm" class="form-grid">';
+        echo '<label><span>账号</span><input type="text" id="loginUsername" placeholder="admin" required></label>';
+        echo '<label><span>密码</span><input type="password" id="loginPassword" placeholder="请输入密码" required></label>';
+        echo '<button type="submit" class="btn btn-primary" id="loginBtn">登录 CRM</button>';
+        echo '</form>';
+        echo '<div class="login-extra"><button type="button" class="btn btn-line" id="forgotPwdBtn">忘记密码（邮箱找回）</button></div>';
+        echo '<p class="hint">支持管理员、店长、店员等共享账号角色进入 CRM（按权限控制数据）。</p></section>';
+        echo '</main>';
+        echo '<main id="appScreen" class="screen app-screen hidden">';
+        echo '<aside class="sidebar"><div class="brand"><p class="chip">QILING</p><h2>CRM 控制台</h2></div>';
+        echo '<nav id="navList" class="nav-list"></nav><div class="sidebar-footer"><small>v1 CRM</small></div></aside>';
+        echo '<section class="workspace"><header class="topbar"><div><h1 id="viewTitle">CRM</h1><p id="viewSubtitle">独立业务域与数据模型</p></div>';
+        echo '<div class="user-box"><div><p id="userName">-</p><small id="userMeta">-</small></div><button id="logoutBtn" class="btn btn-ghost">退出</button></div></header>';
+        echo '<section id="viewRoot" class="view-root"></section></section>';
+        echo '</main>';
+        echo '<script>window.__QILING_ROOT_PATH__=' . ($rootPathJson === false ? '""' : $rootPathJson) . ';</script>';
+        echo '<script src="' . self::h($jsUrl) . '"></script>';
+        echo '</body></html>';
+    }
+
     public static function paymentEntry(): void
     {
         $settings = self::loadSettingsSafe();
@@ -262,8 +316,9 @@ final class SiteController
 
         $rootPath = self::rootPath();
         $publicDir = dirname(__DIR__, 2) . '/public';
-        $cssVersion = self::assetVersion($publicDir . '/pay/assets/pay.css');
-        $jsVersion = self::assetVersion($publicDir . '/pay/assets/pay.js');
+        $assetSeed = self::assetVersionSeed($settings);
+        $cssVersion = self::assetVersion($publicDir . '/pay/assets/pay.css', $assetSeed);
+        $jsVersion = self::assetVersion($publicDir . '/pay/assets/pay.js', $assetSeed);
         $cssUrl = $rootPath . '/pay/assets/pay.css?v=' . $cssVersion;
         $jsUrl = $rootPath . '/pay/assets/pay.js?v=' . $jsVersion;
         $rootPathJson = json_encode($rootPath, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -396,12 +451,28 @@ final class SiteController
         return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
     }
 
-    private static function assetVersion(string $path): string
+    /**
+     * @param array<string, string> $settings
+     */
+    private static function assetVersionSeed(array $settings): string
+    {
+        $raw = trim((string) ($settings['frontend_asset_version_seed'] ?? ''));
+        if ($raw === '') {
+            return '';
+        }
+        return preg_replace('/[^a-zA-Z0-9._-]/', '', $raw) ?? '';
+    }
+
+    private static function assetVersion(string $path, string $seed = ''): string
     {
         $mtime = @filemtime($path);
+        $version = '1';
         if (is_int($mtime) && $mtime > 0) {
-            return (string) $mtime;
+            $version = (string) $mtime;
         }
-        return '1';
+        if ($seed !== '') {
+            return $version . '.' . $seed;
+        }
+        return $version;
     }
 }

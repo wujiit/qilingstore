@@ -1470,8 +1470,8 @@ final class CustomerPortalController
     private static function validateCustomPortalToken(string $token): string
     {
         $value = trim($token);
-        if (preg_match('/^\d{4,6}$/', $value) !== 1) {
-            return 'new_token must be 4-6 digits';
+        if (preg_match('/^[A-Za-z0-9_-]{16,64}$/', $value) !== 1) {
+            return 'new_token must be 16-64 chars (letters, numbers, _ or -)';
         }
 
         return '';

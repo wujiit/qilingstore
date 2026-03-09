@@ -22,6 +22,141 @@ final class PushService
     }
 
     /**
+     * @param array<int, string> $providers
+     * @return array<int, array<string, mixed>>
+     */
+    public static function listEnabledChannelOptions(PDO $pdo, array $providers = []): array
+    {
+        $normalizedProviders = array_values(array_unique(array_filter(array_map(
+            static fn ($provider): string => strtolower(trim((string) $provider)),
+            $providers
+        ), static fn (string $provider): bool => in_array($provider, ['dingtalk', 'feishu'], true))));
+
+        $sql = 'SELECT id, channel_code, channel_name, provider
+                FROM qiling_push_channels
+                WHERE enabled = 1';
+        $params = [];
+
+        if ($normalizedProviders !== []) {
+            $placeholders = implode(',', array_fill(0, count($normalizedProviders), '?'));
+            $sql .= ' AND provider IN (' . $placeholders . ')';
+            $params = $normalizedProviders;
+        }
+
+        $sql .= ' ORDER BY id ASC';
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    /**
+     * @param array<int, int>|null $channelIds
+     * @param array<string, mixed> $args
+     * @return array<string, mixed>
+     */
+    public static function sendText(
+        PDO $pdo,
+        string $message,
+        ?array $channelIds,
+        string $triggerSource = 'manual_text',
+        ?int $taskId = null,
+        array $args = []
+    ): array {
+        $message = trim($message);
+        if ($message === '') {
+            throw new \RuntimeException('message is required');
+        }
+
+        $channels = self::resolveNotifyChannels($pdo, $channelIds);
+        if ($channels === []) {
+            throw new \RuntimeException('no enabled push channel');
+        }
+
+        $sendArgs = $args;
+        if (!array_key_exists('type', $sendArgs)) {
+            $sendArgs['type'] = 'text';
+        }
+
+        $source = self::sanitizeTriggerSource($triggerSource, 'manual_text');
+        $sent = 0;
+        $failed = 0;
+        $details = [];
+        $channelSummary = [];
+
+        foreach ($channels as $channel) {
+            $provider = self::provider((string) ($channel['provider'] ?? ''));
+            $result = [];
+            $ok = false;
+            $error = '';
+            $responseCode = 0;
+            $body = '';
+
+            if ($provider instanceof PushProviderInterface) {
+                try {
+                    $result = $provider->send($channel, $message, $sendArgs);
+                    $ok = (bool) ($result['ok'] ?? false);
+                    $error = self::truncate((string) ($result['error'] ?? ''), 500);
+                    $responseCode = (int) ($result['status_code'] ?? 0);
+                    $body = (string) ($result['body'] ?? '');
+                } catch (\Throwable $e) {
+                    $ok = false;
+                    $error = self::truncate($e->getMessage(), 500);
+                }
+            } else {
+                $ok = false;
+                $error = 'push provider not supported';
+            }
+
+            if ($ok) {
+                $sent++;
+            } else {
+                $failed++;
+            }
+
+            $logId = self::writeLog($pdo, [
+                'channel_id' => (int) ($channel['id'] ?? 0),
+                'provider' => (string) ($channel['provider'] ?? ''),
+                'status' => $ok ? 'success' : 'failed',
+                'response_code' => $responseCode,
+                'request_payload' => $result['request_payload'] ?? [],
+                'response_body' => $body,
+                'error_message' => $error,
+                'trigger_source' => $source,
+                'task_id' => $taskId,
+            ]);
+
+            $channelSummary[] = [
+                'id' => (int) ($channel['id'] ?? 0),
+                'channel_code' => (string) ($channel['channel_code'] ?? ''),
+                'channel_name' => (string) ($channel['channel_name'] ?? ''),
+                'provider' => (string) ($channel['provider'] ?? ''),
+            ];
+
+            $details[] = [
+                'channel_id' => (int) ($channel['id'] ?? 0),
+                'channel_code' => (string) ($channel['channel_code'] ?? ''),
+                'channel_name' => (string) ($channel['channel_name'] ?? ''),
+                'provider' => (string) ($channel['provider'] ?? ''),
+                'ok' => $ok,
+                'error' => $error,
+                'status_code' => $responseCode,
+                'log_id' => $logId,
+            ];
+        }
+
+        return [
+            'channel' => isset($channelSummary[0]) ? $channelSummary[0] : null,
+            'channel_ids' => array_values(array_map(static fn (array $row): int => (int) ($row['id'] ?? 0), $channelSummary)),
+            'channels' => $channelSummary,
+            'sent' => $sent,
+            'failed' => $failed,
+            'details' => $details,
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
      */

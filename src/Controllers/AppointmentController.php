@@ -22,6 +22,15 @@ final class AppointmentController
         $user = Auth::requireUser(Auth::userFromBearerToken());
         $storeId = isset($_GET['store_id']) && is_numeric($_GET['store_id']) ? (int) $_GET['store_id'] : null;
         $scopeStoreId = DataScope::resolveFilterStoreId($user, $storeId);
+        $status = isset($_GET['status']) && is_string($_GET['status']) ? trim($_GET['status']) : '';
+        $customerId = isset($_GET['customer_id']) && is_numeric($_GET['customer_id']) ? (int) $_GET['customer_id'] : 0;
+        $staffId = isset($_GET['staff_id']) && is_numeric($_GET['staff_id']) ? (int) $_GET['staff_id'] : 0;
+        $dateFrom = isset($_GET['date_from']) && is_string($_GET['date_from']) ? trim($_GET['date_from']) : '';
+        $dateTo = isset($_GET['date_to']) && is_string($_GET['date_to']) ? trim($_GET['date_to']) : '';
+        $cursor = isset($_GET['cursor']) && is_numeric($_GET['cursor']) ? (int) $_GET['cursor'] : 0;
+        $limit = isset($_GET['limit']) && is_numeric($_GET['limit']) ? (int) $_GET['limit'] : 1000;
+        $limit = max(1, min($limit, 2000));
+        $queryLimit = $limit + 1;
 
         $sql = 'SELECT a.*, c.name AS customer_name, c.mobile AS customer_mobile,
                        s.service_name, st.staff_no, u.username AS staff_username,
@@ -38,18 +47,70 @@ final class AppointmentController
                 LEFT JOIN qiling_staff st ON st.id = a.staff_id
                 LEFT JOIN qiling_users u ON u.id = st.user_id
                 LEFT JOIN qiling_appointment_consumes ac ON ac.appointment_id = a.id
-                LEFT JOIN qiling_member_cards mc ON mc.id = ac.member_card_id';
+                LEFT JOIN qiling_member_cards mc ON mc.id = ac.member_card_id
+                WHERE 1 = 1';
         $params = [];
         if ($scopeStoreId !== null) {
-            $sql .= ' WHERE a.store_id = :store_id';
+            $sql .= ' AND a.store_id = :store_id';
             $params['store_id'] = $scopeStoreId;
         }
-        $sql .= ' ORDER BY a.id DESC';
+        if ($status !== '') {
+            $sql .= ' AND a.status = :status';
+            $params['status'] = $status;
+        }
+        if ($customerId > 0) {
+            $sql .= ' AND a.customer_id = :customer_id';
+            $params['customer_id'] = $customerId;
+        }
+        if ($staffId > 0) {
+            $sql .= ' AND a.staff_id = :staff_id';
+            $params['staff_id'] = $staffId;
+        }
+        if ($dateFrom !== '') {
+            $fromAt = strtotime($dateFrom . ' 00:00:00');
+            if ($fromAt !== false) {
+                $sql .= ' AND a.start_at >= :start_from';
+                $params['start_from'] = $dateFrom . ' 00:00:00';
+            }
+        }
+        if ($dateTo !== '') {
+            $toAt = strtotime($dateTo . ' 23:59:59');
+            if ($toAt !== false) {
+                $sql .= ' AND a.start_at <= :start_to';
+                $params['start_to'] = $dateTo . ' 23:59:59';
+            }
+        }
+        if ($cursor > 0) {
+            $sql .= ' AND a.id < :cursor';
+            $params['cursor'] = $cursor;
+        }
+        $sql .= ' ORDER BY a.id DESC LIMIT ' . $queryLimit;
 
         $stmt = Database::pdo()->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        Response::json(['data' => $rows]);
+        $hasMore = count($rows) > $limit;
+        if ($hasMore) {
+            $rows = array_slice($rows, 0, $limit);
+        }
+        $nextCursor = null;
+        if ($hasMore && !empty($rows)) {
+            $tail = $rows[count($rows) - 1];
+            $nextCursor = (int) ($tail['id'] ?? 0);
+            if ($nextCursor <= 0) {
+                $nextCursor = null;
+            }
+        }
+
+        Response::json([
+            'data' => $rows,
+            'pagination' => [
+                'limit' => $limit,
+                'cursor' => $cursor > 0 ? $cursor : null,
+                'next_cursor' => $nextCursor,
+                'has_more' => $hasMore,
+            ],
+        ]);
     }
 
     public static function create(): void

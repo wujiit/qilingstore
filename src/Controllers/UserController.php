@@ -298,6 +298,7 @@ final class UserController
             'password_hash' => password_hash($newPassword, PASSWORD_BCRYPT),
             'updated_at' => $now,
         ]);
+        Auth::bumpTokenVersion($pdo, $userId, $now);
 
         Audit::log((int) $actor['id'], 'user.reset_password', 'user', $userId, 'Reset user password', []);
 

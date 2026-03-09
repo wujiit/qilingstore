@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Qiling\Controllers;
 
 use PDO;
+use RuntimeException;
 use Qiling\Core\Audit;
 use Qiling\Core\Auth;
 use Qiling\Core\DataScope;
@@ -14,7 +15,6 @@ use Qiling\Support\Response;
 
 final class ServiceController
 {
-    private static bool $categoryTableReady = false;
     private static bool $serviceSchemaReady = false;
 
     public static function ensureServiceSchema(PDO $pdo): void
@@ -23,42 +23,46 @@ final class ServiceController
             return;
         }
 
-        self::ensureCategoryTable($pdo);
-
-        $columnStmt = $pdo->prepare("SHOW COLUMNS FROM qiling_services LIKE 'supports_online_booking'");
-        $columnStmt->execute();
-        $hasColumn = $columnStmt->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($hasColumn)) {
-            $pdo->exec('ALTER TABLE qiling_services ADD COLUMN supports_online_booking TINYINT(1) NOT NULL DEFAULT 0 AFTER category');
+        if (!self::hasTable($pdo, 'qiling_service_categories')) {
+            throw new RuntimeException('数据库结构未升级：缺少 qiling_service_categories，请先执行系统升级。');
+        }
+        if (!self::hasColumn($pdo, 'qiling_services', 'supports_online_booking')) {
+            throw new RuntimeException('数据库结构未升级：缺少 qiling_services.supports_online_booking，请先执行系统升级。');
         }
 
         self::$serviceSchemaReady = true;
     }
 
-    private static function ensureCategoryTable(PDO $pdo): void
+    private static function hasTable(PDO $pdo, string $table): bool
     {
-        if (self::$categoryTableReady) {
-            return;
-        }
-
-        $pdo->exec(
-            'CREATE TABLE IF NOT EXISTS qiling_service_categories (
-                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-                store_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                category_name VARCHAR(60) NOT NULL,
-                sort_order INT NOT NULL DEFAULT 100,
-                status VARCHAR(20) NOT NULL DEFAULT \'active\',
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                PRIMARY KEY (id),
-                UNIQUE KEY uq_qiling_service_categories_store_name (store_id, category_name),
-                KEY idx_qiling_service_categories_store_id (store_id),
-                KEY idx_qiling_service_categories_status (status),
-                KEY idx_qiling_service_categories_sort (sort_order, id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+        $stmt = $pdo->prepare(
+            'SELECT COUNT(*)
+             FROM information_schema.TABLES
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = :table_name'
         );
+        $stmt->execute([
+            'table_name' => $table,
+        ]);
 
-        self::$categoryTableReady = true;
+        return (int) $stmt->fetchColumn() > 0;
+    }
+
+    private static function hasColumn(PDO $pdo, string $table, string $column): bool
+    {
+        $stmt = $pdo->prepare(
+            'SELECT COUNT(*)
+             FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = :table_name
+               AND COLUMN_NAME = :column_name'
+        );
+        $stmt->execute([
+            'table_name' => $table,
+            'column_name' => $column,
+        ]);
+
+        return (int) $stmt->fetchColumn() > 0;
     }
 
     public static function index(): void

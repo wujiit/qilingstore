@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Qiling\Core;
 
 use PDO;
+use RuntimeException;
 
 final class SystemSettingService
 {
@@ -15,7 +16,15 @@ final class SystemSettingService
         'front_maintenance_message' => '系统维护中，请稍后访问。',
         'front_allow_ips' => '',
         'security_headers_enabled' => '1',
+        'frontend_asset_version_seed' => '',
         'mobile_role_menu_json' => '',
+        'crm_reminder_push_enabled' => '0',
+        'crm_reminder_push_channel_ids' => '[]',
+        'crm_reminder_push_types' => '["schedule","due","overdue"]',
+        'crm_reminder_push_title_prefix' => '【启灵CRM提醒】',
+        'crm_reminder_push_template' => "类型：{reminder_type_label}\n标题：{title}\n截止：{due_at}\n内容：{content}",
+        'crm_reminder_push_max_per_run' => '50',
+        'crm_reminder_push_only_created' => '1',
         'alipay_enabled' => '0',
         'alipay_app_id' => '',
         'alipay_private_key' => '',
@@ -47,6 +56,9 @@ final class SystemSettingService
 
     private static bool $tableEnsured = false;
 
+    /** @var array<string, string>|null */
+    private static ?array $settingsCache = null;
+
     /**
      * @return array<string, string>
      */
@@ -60,6 +72,10 @@ final class SystemSettingService
      */
     public static function all(PDO $pdo): array
     {
+        if (is_array(self::$settingsCache)) {
+            return self::$settingsCache;
+        }
+
         self::ensureTable($pdo);
 
         $stmt = $pdo->query('SELECT setting_key, setting_value FROM qiling_system_settings');
@@ -75,7 +91,7 @@ final class SystemSettingService
         }
 
         $settings['admin_entry_path'] = self::normalizeAdminEntryPath($settings['admin_entry_path']);
-
+        self::$settingsCache = $settings;
         return $settings;
     }
 
@@ -125,6 +141,8 @@ final class SystemSettingService
                 'updated_at' => $now,
             ]);
         }
+
+        self::$settingsCache = null;
     }
 
     public static function normalizeAdminEntryPath(string $path): string
@@ -174,18 +192,18 @@ final class SystemSettingService
             return;
         }
 
-        $pdo->exec(
-            'CREATE TABLE IF NOT EXISTS qiling_system_settings (
-                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-                setting_key VARCHAR(100) NOT NULL,
-                setting_value TEXT NULL,
-                updated_by BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                PRIMARY KEY (id),
-                UNIQUE KEY uq_qiling_system_settings_key (setting_key)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+        $stmt = $pdo->prepare(
+            'SELECT COUNT(*)
+             FROM information_schema.TABLES
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = :table_name'
         );
+        $stmt->execute([
+            'table_name' => 'qiling_system_settings',
+        ]);
+        if ((int) $stmt->fetchColumn() <= 0) {
+            throw new RuntimeException('数据库结构未升级：缺少 qiling_system_settings，请先到系统升级页面执行升级。');
+        }
 
         self::$tableEnsured = true;
     }

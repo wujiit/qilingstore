@@ -25,6 +25,37 @@ final class SystemSettingsController
         Response::json(self::payload($settings));
     }
 
+    public static function refreshAssets(): void
+    {
+        $user = Auth::requireUser(Auth::userFromBearerToken());
+        DataScope::requireAdmin($user);
+
+        $seed = self::generateAssetSeed();
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            SystemSettingService::upsert($pdo, [
+                'frontend_asset_version_seed' => $seed,
+            ], (int) $user['id']);
+            Audit::log((int) $user['id'], 'system.assets.refresh', 'system_settings', 0, 'Refresh frontend asset version', [
+                'frontend_asset_version_seed' => $seed,
+            ]);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            Response::serverError('refresh frontend assets failed', $e);
+            return;
+        }
+
+        $settings = SystemSettingService::all(Database::pdo());
+        $payload = self::payload($settings);
+        $payload['message'] = 'frontend assets refreshed';
+        $payload['refreshed_asset_version'] = $seed;
+        Response::json($payload);
+    }
+
     public static function update(): void
     {
         $user = Auth::requireUser(Auth::userFromBearerToken());
@@ -133,11 +164,26 @@ final class SystemSettingsController
                 'front_maintenance_message' => $settings['front_maintenance_message'] ?? '',
                 'front_allow_ips' => $settings['front_allow_ips'] ?? '',
                 'security_headers_enabled' => ($settings['security_headers_enabled'] ?? '1') === '1' ? 1 : 0,
+                'frontend_asset_version_seed' => $settings['frontend_asset_version_seed'] ?? '',
                 'mobile_role_menu_json' => $mobileRoleMenuJson !== false ? $mobileRoleMenuJson : '',
             ],
             'derived' => [
                 'admin_entry_url' => $appUrl !== '' ? ($appUrl . '/' . $adminPath) : ('/' . $adminPath),
+                'install_url' => $appUrl !== '' ? ($appUrl . '/install.php') : '/install.php',
+                'upgrade_status_api' => $appUrl !== '' ? ($appUrl . '/api/v1/system/upgrade/status') : '/api/v1/system/upgrade/status',
+                'upgrade_run_api' => $appUrl !== '' ? ($appUrl . '/api/v1/system/upgrade/run') : '/api/v1/system/upgrade/run',
+                'assets_refresh_api' => $appUrl !== '' ? ($appUrl . '/api/v1/system/assets/refresh') : '/api/v1/system/assets/refresh',
             ],
         ];
+    }
+
+    private static function generateAssetSeed(): string
+    {
+        $base = gmdate('YmdHis');
+        try {
+            return $base . '-' . substr(bin2hex(random_bytes(4)), 0, 8);
+        } catch (\Throwable) {
+            return $base . '-' . (string) random_int(100000, 999999);
+        }
     }
 }
