@@ -32,6 +32,17 @@ CREATE TABLE IF NOT EXISTS qiling_roles (
     UNIQUE KEY uq_qiling_roles_role_key (role_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS qiling_auth_ip_guards (
+    ip_address VARCHAR(64) NOT NULL,
+    window_started_at DATETIME NULL,
+    window_request_count INT NOT NULL DEFAULT 0,
+    locked_until DATETIME NULL,
+    created_at DATETIME NULL,
+    updated_at DATETIME NULL,
+    PRIMARY KEY (ip_address),
+    KEY idx_qiling_auth_ip_guards_locked_until (locked_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS qiling_stores (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     store_code VARCHAR(32) NOT NULL,
@@ -834,6 +845,19 @@ CREATE TABLE IF NOT EXISTS qiling_report_daily_channel (
     PRIMARY KEY (report_date, store_id, source_channel),
     KEY idx_qiling_report_daily_channel_store_date (store_id, report_date),
     KEY idx_qiling_report_daily_channel_channel (source_channel)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS qiling_report_daily_channel_cost (
+    report_date DATE NOT NULL,
+    store_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    source_channel VARCHAR(80) NOT NULL DEFAULT '',
+    cost_amount DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+    note VARCHAR(255) NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (report_date, store_id, source_channel),
+    KEY idx_qiling_report_daily_channel_cost_store_date (store_id, report_date),
+    KEY idx_qiling_report_daily_channel_cost_channel (source_channel)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS qiling_report_daily_service (
