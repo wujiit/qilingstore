@@ -713,8 +713,8 @@ window.__QILING_ADMIN_VIEW_FACTORIES__['finance'] = function (shared) {
               <h4>${escapeHtml(title)}</h4>
               <p><b>支付单号：</b>${escapeHtml(row.payment_no || '-')}</p>
               <p><b>支付场景：</b>${escapeHtml(row.scene || '-')}</p>
-              <p><b>支付链接：</b>${row.pay_url ? `<a href="${escapeHtml(row.pay_url)}" target="_blank" rel="noopener">${escapeHtml(row.pay_url)}</a>` : '-'}</p>
-              <p><b>前台支付页：</b>${row.cashier_url ? `<a href="${escapeHtml(row.cashier_url)}" target="_blank" rel="noopener">${escapeHtml(row.cashier_url)}</a>` : '-'}</p>
+              <p><b>支付链接：</b>${row.pay_url ? `<a href="${escapeHtml(row.pay_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.pay_url)}</a>` : '-'}</p>
+              <p><b>前台支付页：</b>${row.cashier_url ? `<a href="${escapeHtml(row.cashier_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.cashier_url)}</a>` : '-'}</p>
               ${qrUrl ? `<img src="${escapeHtml(qrUrl)}" alt="${escapeHtml(title)}二维码" />` : '<p class="small-note">该通道未返回二维码</p>'}
             </article>
           `;

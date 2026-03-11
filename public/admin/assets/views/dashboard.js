@@ -106,6 +106,9 @@ window.__QILING_ADMIN_VIEW_FACTORIES__['dashboard'] = function (shared) {
     const followupRows = pickData(followup);
     const pushRows = pickData(pushLogs);
 
+    // If user has switched away while requests were in flight, do not overwrite the current view.
+    if (state.activeView !== 'dashboard') return;
+
     el.viewRoot.innerHTML = `
       <section class="grid kpi">
         <article class="kpi-item"><span>近7天收款</span><b>¥${escapeHtml(formatMoney(ops.paid_amount))}</b></article>

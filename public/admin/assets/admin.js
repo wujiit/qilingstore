@@ -12,6 +12,55 @@
   const TOKEN_KEY = 'qiling_admin_token';
   const CRM_TOKEN_KEY = 'qiling_crm_admin_token';
 
+  function readStoredToken(key) {
+    const storageKey = String(key || '').trim();
+    if (!storageKey) return '';
+
+    try {
+      const current = String(sessionStorage.getItem(storageKey) || '').trim();
+      if (current !== '') {
+        return current;
+      }
+    } catch (_err) {
+      // ignore sessionStorage access errors
+    }
+
+    const legacy = String(localStorage.getItem(storageKey) || '').trim();
+    if (legacy !== '') {
+      try {
+        sessionStorage.setItem(storageKey, legacy);
+      } catch (_err) {
+        // ignore sessionStorage access errors
+      }
+      localStorage.removeItem(storageKey);
+    }
+    return legacy;
+  }
+
+  function writeStoredToken(key, value) {
+    const storageKey = String(key || '').trim();
+    const token = String(value || '').trim();
+    if (!storageKey || !token) return;
+
+    try {
+      sessionStorage.setItem(storageKey, token);
+    } catch (_err) {
+      // ignore sessionStorage access errors
+    }
+    localStorage.removeItem(storageKey);
+  }
+
+  function clearStoredToken(key) {
+    const storageKey = String(key || '').trim();
+    if (!storageKey) return;
+    try {
+      sessionStorage.removeItem(storageKey);
+    } catch (_err) {
+      // ignore sessionStorage access errors
+    }
+    localStorage.removeItem(storageKey);
+  }
+
   const el = {
     loginScreen: document.getElementById('loginScreen'),
     appScreen: document.getElementById('appScreen'),
@@ -31,7 +80,7 @@
   };
 
   const state = {
-    token: localStorage.getItem(TOKEN_KEY) || '',
+    token: readStoredToken(TOKEN_KEY),
     user: null,
     storeOptions: [],
     activeView: 'dashboard',
@@ -746,7 +795,7 @@
       'staff not found': '员工不存在',
       'store not found': '门店不存在',
       'cannot disable current login account': '不能停用当前登录账号',
-      'new_password must be at least 6 chars': '新密码至少 6 位',
+      'password must be at least 8 chars': '密码至少 8 位',
       'user_id is required': '用户ID不能为空',
       'id is required': 'ID 不能为空',
       'name and mobile are required': '姓名和手机号不能为空',
@@ -776,6 +825,11 @@
       'schema.sql not found': '升级脚本缺失：schema.sql 不存在',
       'schema.sql is empty': '升级脚本为空：schema.sql 无内容',
       'refresh frontend assets failed': '刷新前端资源失败',
+      'channel cost table is not ready, please run system upgrade': '渠道成本表未就绪，请先执行系统升级',
+      'report_date is invalid': '日期格式无效，请使用 YYYY-MM-DD',
+      'cost_amount is invalid': '成本金额格式无效',
+      'cost_amount must be >= 0': '成本金额不能小于 0',
+      'items too many': '单次提交条目过多，请拆分后重试',
       'password reset is disabled': '当前未启用邮箱找回，请联系管理员处理',
       'account, email, code, new_password are required': '请填写账号、邮箱、验证码和新密码',
       'new_password must be at least 8 chars': '新密码至少 8 位',
@@ -786,6 +840,34 @@
     if (Object.prototype.hasOwnProperty.call(exact, raw)) {
       return exact[raw];
     }
+
+    const dynamicMin = raw.match(/^(password|new_password) must be at least (\d+) chars$/);
+    if (dynamicMin) {
+      return dynamicMin[1] === 'new_password'
+        ? `新密码至少 ${dynamicMin[2]} 位`
+        : `密码至少 ${dynamicMin[2]} 位`;
+    }
+
+    const dynamicMax = raw.match(/^(password|new_password) must be at most (\d+) chars$/);
+    if (dynamicMax) {
+      return dynamicMax[1] === 'new_password'
+        ? `新密码长度不能超过 ${dynamicMax[2]} 位`
+        : `密码长度不能超过 ${dynamicMax[2]} 位`;
+    }
+
+    const dynamicClasses = raw.match(/^(password|new_password) must include at least (\d+) of uppercase, lowercase, number and symbol$/);
+    if (dynamicClasses) {
+      return dynamicClasses[1] === 'new_password'
+        ? `新密码需包含大写字母、小写字母、数字、符号中的至少 ${dynamicClasses[2]} 类`
+        : `密码需包含大写字母、小写字母、数字、符号中的至少 ${dynamicClasses[2]} 类`;
+    }
+
+    if (raw === 'password must not contain spaces') return '密码不能包含空格';
+    if (raw === 'new_password must not contain spaces') return '新密码不能包含空格';
+    if (raw === 'password is too common or leaked') return '密码过于常见或已泄露，请更换';
+    if (raw === 'new_password is too common or leaked') return '新密码过于常见或已泄露，请更换';
+    if (raw === 'password is too similar to account information') return '密码不能与账号信息过于相似';
+    if (raw === 'new_password is too similar to account information') return '新密码不能与账号信息过于相似';
 
     const lower = raw.toLowerCase();
 
@@ -1064,9 +1146,6 @@
 
   function renderNav() {
     const navItems = visibleNavItems();
-    if (!navItems.some((item) => item.id === state.activeView) && navItems.length > 0) {
-      state.activeView = navItems[0].id;
-    }
 
     const grouped = navItems.reduce((acc, item) => {
       const key = item.group || '其他';
@@ -1082,17 +1161,25 @@
         <p class="nav-group-title">${escapeHtml(group)}</p>
         ${items.map((item) => {
           const active = item.id === state.activeView ? 'active' : '';
-          return `<button class="nav-item ${active}" data-view="${item.id}" title="${escapeHtml(item.subtitle)}">${escapeHtml(item.title)}</button>`;
+          return `<button type="button" class="nav-item ${active}" data-view="${item.id}" data-title="${escapeHtml(item.title)}" title="${escapeHtml(item.subtitle)}">${escapeHtml(item.title)}</button>`;
         }).join('')}
       </section>
     `).join('');
 
-    el.navList.querySelectorAll('.nav-item').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.getAttribute('data-view') || 'dashboard';
-        openView(id);
-      });
-    });
+    el.navList.onclick = (event) => {
+      const target = event && event.target ? event.target : null;
+      if (!target || typeof target.closest !== 'function') return;
+      const btn = target.closest('.nav-item');
+      if (!btn) return;
+
+      let id = String(btn.getAttribute('data-view') || '').trim();
+      const title = String(btn.getAttribute('data-title') || '').trim();
+      if (!id && title === '报表中心') {
+        id = 'reports';
+      }
+      if (!id) return;
+      openView(id);
+    };
   }
 
   async function tryAuthMe() {
@@ -1124,8 +1211,8 @@
   function logout(showToast = true) {
     state.token = '';
     state.user = null;
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(CRM_TOKEN_KEY);
+    clearStoredToken(TOKEN_KEY);
+    clearStoredToken(CRM_TOKEN_KEY);
     showLogin();
     if (showToast) toast('已退出登录', 'info');
   }
@@ -1133,7 +1220,13 @@
   function syncCrmTokenFromAdminToken() {
     const token = String(state.token || '').trim();
     if (!token) return false;
-    localStorage.setItem(CRM_TOKEN_KEY, token);
+    writeStoredToken(CRM_TOKEN_KEY, token);
+    try {
+      // sessionStorage is tab-scoped; keep a short-lived localStorage bridge for new CRM tabs.
+      localStorage.setItem(CRM_TOKEN_KEY, token);
+    } catch (_err) {
+      // ignore localStorage access errors
+    }
     return true;
   }
 
@@ -1177,7 +1270,13 @@
     }
 
     const navItems = visibleNavItems();
-    const safeViewId = navItems.some((v) => v.id === viewId) ? viewId : ((navItems[0] && navItems[0].id) || 'dashboard');
+    const allNavItems = Array.isArray(state.nav) ? state.nav : [];
+    const requestedView = String(viewId || '').trim();
+    const hasRequested = allNavItems.some((v) => v.id === requestedView);
+    const hasCurrent = navItems.some((v) => v.id === state.activeView);
+    const safeViewId = hasRequested
+      ? requestedView
+      : (hasCurrent ? state.activeView : ((navItems[0] && navItems[0].id) || 'dashboard'));
     state.activeView = safeViewId;
     renderNav();
 
@@ -1537,7 +1636,7 @@
         throw new Error('登录返回缺少 token');
       }
 
-      localStorage.setItem(TOKEN_KEY, state.token);
+      writeStoredToken(TOKEN_KEY, state.token);
       showApp();
       renderNav();
       await openView(state.activeView);
@@ -1565,7 +1664,7 @@
 
       const code = window.prompt('请输入收到的6位验证码');
       if (!code) return;
-      const newPassword = window.prompt('请输入新密码（至少8位）');
+      const newPassword = window.prompt('请输入新密码（至少8位，且包含大小写字母/数字/符号中的至少3类）');
       if (!newPassword) return;
 
       await request('POST', '/auth/password-reset/confirm', {

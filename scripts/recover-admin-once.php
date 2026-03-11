@@ -18,6 +18,7 @@ use Qiling\Core\Audit;
 use Qiling\Core\Auth;
 use Qiling\Core\Config;
 use Qiling\Core\Database;
+use Qiling\Core\PasswordPolicy;
 
 $recoverySecret = 'CHANGE_ME_TO_A_LONG_RANDOM_SECRET';
 $allowForceAdmin = false;
@@ -79,8 +80,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!isAllowedUsername($username, $allowedUsernames)) {
             throw new RuntimeException('当前恢复文件不允许重置该账号');
         }
-        if (strlen($newPassword) < 8) {
-            throw new RuntimeException('新密码至少 8 位');
+        $passwordError = PasswordPolicy::validate($newPassword, 'new_password', [
+            'username' => $username,
+        ]);
+        if ($passwordError !== null) {
+            throw new RuntimeException(translatePasswordPolicyMessage($passwordError));
         }
         if (!hash_equals($newPassword, $confirmPassword)) {
             throw new RuntimeException('两次输入的新密码不一致');
@@ -239,6 +243,35 @@ function isAllowedIp(array $allowedIps, string $ip): bool
     return false;
 }
 
+function translatePasswordPolicyMessage(string $message): string
+{
+    $message = trim($message);
+    if ($message === '') {
+        return '新密码不符合安全策略';
+    }
+
+    if (preg_match('/^new_password must be at least (\d+) chars$/', $message, $matches) === 1) {
+        return '新密码至少 ' . (int) ($matches[1] ?? 8) . ' 位';
+    }
+    if (preg_match('/^new_password must be at most (\d+) chars$/', $message, $matches) === 1) {
+        return '新密码长度不能超过 ' . (int) ($matches[1] ?? 128) . ' 位';
+    }
+    if ($message === 'new_password must not contain spaces') {
+        return '新密码不能包含空格';
+    }
+    if (preg_match('/^new_password must include at least (\d+) of uppercase, lowercase, number and symbol$/', $message, $matches) === 1) {
+        return '新密码需包含大写字母、小写字母、数字、符号中的至少 ' . (int) ($matches[1] ?? 3) . ' 类';
+    }
+    if ($message === 'new_password is too common or leaked') {
+        return '新密码过于常见或已泄露，请更换';
+    }
+    if ($message === 'new_password is too similar to account information') {
+        return '新密码不能与账号信息过于相似';
+    }
+
+    return '新密码不符合安全策略：' . $message;
+}
+
 function parseUtcDateTime(string $value): int
 {
     $value = trim($value);
@@ -299,7 +332,7 @@ function parseUtcDateTime(string $value): int
             <label>管理员账号（username）</label>
             <input type="text" name="username" value="admin" required>
 
-            <label>新密码（至少8位）</label>
+            <label>新密码（至少8位，且需包含3类字符）</label>
             <input type="password" name="new_password" minlength="8" required>
 
             <label>确认新密码</label>

@@ -480,6 +480,14 @@ textarea {
   color: #1b3832;
 }
 
+.btn-inline-action {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 10px;
+  min-width: 0;
+  font-weight: 600;
+}
+
 .inline-actions {
   display: flex;
   gap: 8px;

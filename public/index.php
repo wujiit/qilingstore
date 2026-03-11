@@ -215,7 +215,7 @@ $router->add('POST', '/api/v1/auth/login', [AuthController::class, 'login']);
 $router->add('GET', '/api/v1/auth/me', [AuthController::class, 'me']);
 $router->add('POST', '/api/v1/auth/password-reset/request', [PasswordResetController::class, 'request']);
 $router->add('POST', '/api/v1/auth/password-reset/confirm', [PasswordResetController::class, 'confirm']);
-$router->add('GET', '/api/v1/customer-portal/overview', [CustomerPortalController::class, 'overview']);
+$router->add('POST', '/api/v1/customer-portal/overview', [CustomerPortalController::class, 'overview']);
 $router->add('POST', '/api/v1/customer-portal/appointments/create', [CustomerPortalController::class, 'createPortalAppointment']);
 $router->add('POST', '/api/v1/customer-portal/payments/create', [CustomerPortalController::class, 'createOnlinePayment']);
 $router->add('POST', '/api/v1/customer-portal/payments/sync', [CustomerPortalController::class, 'syncOnlinePayment']);
@@ -314,26 +314,36 @@ $router->add('GET', '/api/v1/crm/bridge/customer-360', [CrmBridgeController::cla
 $router->add('GET', '/api/v1/stores', [StoreController::class, 'index']);
 $router->add('POST', '/api/v1/stores', [StoreController::class, 'create']);
 $router->add('POST', '/api/v1/stores/update', [StoreController::class, 'update']);
+$router->add('POST', '/api/v1/stores/delete', [StoreController::class, 'remove']);
 
 $router->add('GET', '/api/v1/staff', [StaffController::class, 'index']);
 $router->add('POST', '/api/v1/staff', [StaffController::class, 'create']);
 $router->add('POST', '/api/v1/staff/update', [StaffController::class, 'update']);
+$router->add('POST', '/api/v1/staff/delete', [StaffController::class, 'remove']);
 
 $router->add('GET', '/api/v1/users', [UserController::class, 'index']);
 $router->add('POST', '/api/v1/users/update', [UserController::class, 'update']);
 $router->add('POST', '/api/v1/users/status', [UserController::class, 'setStatus']);
+$router->add('POST', '/api/v1/users/delete', [UserController::class, 'remove']);
 $router->add('POST', '/api/v1/users/reset-password', [UserController::class, 'resetPassword']);
 
 $router->add('GET', '/api/v1/customers', [CustomerController::class, 'index']);
 $router->add('POST', '/api/v1/customers', [CustomerController::class, 'create']);
+$router->add('POST', '/api/v1/customers/update', [CustomerController::class, 'update']);
+$router->add('POST', '/api/v1/customers/delete', [CustomerController::class, 'remove']);
 
 $router->add('GET', '/api/v1/services', [ServiceController::class, 'index']);
 $router->add('POST', '/api/v1/services', [ServiceController::class, 'create']);
+$router->add('POST', '/api/v1/services/update', [ServiceController::class, 'update']);
+$router->add('POST', '/api/v1/services/delete', [ServiceController::class, 'remove']);
 $router->add('GET', '/api/v1/service-categories', [ServiceController::class, 'categoryIndex']);
 $router->add('POST', '/api/v1/service-categories', [ServiceController::class, 'createCategory']);
 $router->add('POST', '/api/v1/service-categories/update', [ServiceController::class, 'updateCategory']);
+$router->add('POST', '/api/v1/service-categories/delete', [ServiceController::class, 'removeCategory']);
 $router->add('GET', '/api/v1/service-packages', [ServiceController::class, 'packageIndex']);
 $router->add('POST', '/api/v1/service-packages', [ServiceController::class, 'createPackage']);
+$router->add('POST', '/api/v1/service-packages/update', [ServiceController::class, 'updatePackage']);
+$router->add('POST', '/api/v1/service-packages/delete', [ServiceController::class, 'removePackage']);
 
 $router->add('GET', '/api/v1/member-cards', [MemberCardController::class, 'index']);
 $router->add('POST', '/api/v1/member-cards', [MemberCardController::class, 'create']);
@@ -350,6 +360,7 @@ $router->add('POST', '/api/v1/payments/online/create', [PaymentController::class
 $router->add('POST', '/api/v1/payments/online/create-dual-qr', [PaymentController::class, 'createDualQr']);
 $router->add('GET', '/api/v1/payments/online/status', [PaymentController::class, 'status']);
 $router->add('GET', '/api/v1/payments/public/status', [PaymentController::class, 'publicStatus']);
+$router->add('POST', '/api/v1/payments/public/status', [PaymentController::class, 'publicStatus']);
 $router->add('POST', '/api/v1/payments/public/statuses', [PaymentController::class, 'publicStatuses']);
 $router->add('POST', '/api/v1/payments/online/query', [PaymentController::class, 'queryOnline']);
 $router->add('POST', '/api/v1/payments/online/close', [PaymentController::class, 'closeOnline']);
@@ -412,6 +423,9 @@ $router->add('GET', '/api/v1/reports/customer-repurchase', [ReportController::cl
 $router->add('GET', '/api/v1/reports/operation-overview', [ReportController::class, 'operationOverview']);
 $router->add('GET', '/api/v1/reports/revenue-trend', [ReportController::class, 'revenueTrend']);
 $router->add('GET', '/api/v1/reports/channel-stats', [ReportController::class, 'channelStats']);
+$router->add('GET', '/api/v1/reports/cockpit', [ReportController::class, 'cockpit']);
+$router->add('GET', '/api/v1/reports/channel-costs', [ReportController::class, 'channelCosts']);
+$router->add('POST', '/api/v1/reports/channel-costs', [ReportController::class, 'upsertChannelCosts']);
 $router->add('GET', '/api/v1/reports/service-top', [ReportController::class, 'serviceTop']);
 $router->add('GET', '/api/v1/reports/payment-methods', [ReportController::class, 'paymentMethods']);
 

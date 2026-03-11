@@ -14,6 +14,25 @@
   const AUTO_REFRESH_IDLE_MS = 10000;
   const CUSTOM_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 
+  function readPersistedToken() {
+    try {
+      const current = String(sessionStorage.getItem(TOKEN_KEY) || '').trim();
+      if (current !== '') {
+        return current;
+      }
+
+      // Backward-compatible migration from old localStorage key.
+      const legacy = String(localStorage.getItem(TOKEN_KEY) || '').trim();
+      if (legacy !== '') {
+        sessionStorage.setItem(TOKEN_KEY, legacy);
+        localStorage.removeItem(TOKEN_KEY);
+      }
+      return legacy;
+    } catch (_err) {
+      return '';
+    }
+  }
+
   const el = {
     entryScreen: document.getElementById('entryScreen'),
     entryForm: document.getElementById('entryForm'),
@@ -35,7 +54,7 @@
   };
 
   const state = {
-    token: localStorage.getItem(TOKEN_KEY) || '',
+    token: readPersistedToken(),
     tokenVisible: false,
     payload: null,
     paymentDraft: loadPaymentDraft(),
@@ -116,7 +135,7 @@
   function buildPortalUrl(token) {
     const value = String(token || '').trim();
     if (value === '') return '';
-    return `${window.location.origin}${ROOT_PATH}/customer/?token=${encodeURIComponent(value)}`;
+    return `${window.location.origin}${ROOT_PATH}/customer/#token=${encodeURIComponent(value)}`;
   }
 
   async function copyText(text) {
@@ -244,8 +263,8 @@
     }
 
     return requestJson('/customer-portal/overview', {
-      method: 'GET',
-      query: { token },
+      method: 'POST',
+      body: { token },
     });
   }
 
@@ -386,14 +405,18 @@
     return `${year}-${month}-${day}T${hour}:00`;
   }
 
-  function buildQrImageUrl(content) {
+  function buildQrImageUrl(content, options = {}) {
     const text = String(content || '').trim();
     if (text === '') return '';
+    const allowThirdParty = !!(options && options.allowThirdParty);
     if (text.startsWith('data:image/')) return text;
-    if (text.startsWith('http://') || text.startsWith('https://')) {
+    if (allowThirdParty && (text.startsWith('http://') || text.startsWith('https://'))) {
       return `https://quickchart.io/qr?size=320&margin=1&text=${encodeURIComponent(text)}`;
     }
-    return `https://quickchart.io/qr?size=320&margin=1&text=${encodeURIComponent(text)}`;
+    if (allowThirdParty) {
+      return `https://quickchart.io/qr?size=320&margin=1&text=${encodeURIComponent(text)}`;
+    }
+    return '';
   }
 
   function renderAppointmentPanel(payload) {
@@ -573,7 +596,7 @@
       const qrCode = String(row.qr_code || '').trim();
       const actions = [];
       if (payUrl !== '') {
-        actions.push(`<a class="btn light" href="${escapeHtml(payUrl)}" target="_blank" rel="noopener">立即支付</a>`);
+        actions.push(`<a class="btn light" href="${escapeHtml(payUrl)}" target="_blank" rel="noopener noreferrer">立即支付</a>`);
       }
       if (qrCode !== '') {
         actions.push(`<button class="btn light" type="button" data-payment-qr="${escapeHtml(paymentNo)}">查看二维码</button>`);
@@ -665,7 +688,7 @@
     const activePaymentNo = String(state.highlightedPaymentNo || '').trim();
     const activePayment = activePaymentNo !== '' ? findPaymentByNo(activePaymentNo) : null;
     const activeQrSource = activePayment ? String(activePayment.qr_code || '').trim() : '';
-    const activeQrImage = buildQrImageUrl(activeQrSource);
+    const activeQrImage = buildQrImageUrl(activeQrSource, { allowThirdParty: true });
 
     const selectedOrderPayments = selectedOrderId > 0
       ? onlinePayments.filter((x) => toInt(x.order_id, 0) === selectedOrderId)
@@ -717,7 +740,7 @@
           <p>状态：${escapeHtml(paymentStatusLabel(activePayment.status || ''))} · 金额：¥${escapeHtml(formatMoney(activePayment.amount || 0))}</p>
           ${activeQrImage ? `<img src="${escapeHtml(activeQrImage)}" alt="支付二维码" />` : '<p class="hint">该支付单当前无二维码，可使用支付链接完成支付。</p>'}
           <div class="pay-preview-actions">
-            ${String(activePayment.pay_url || '').trim() !== '' ? `<a class="btn primary" href="${escapeHtml(activePayment.pay_url)}" target="_blank" rel="noopener">立即支付</a>` : ''}
+            ${String(activePayment.pay_url || '').trim() !== '' ? `<a class="btn primary" href="${escapeHtml(activePayment.pay_url)}" target="_blank" rel="noopener noreferrer">立即支付</a>` : ''}
             ${String(activePayment.status || '') !== 'success' ? `<button class="btn light" type="button" data-payment-sync="${escapeHtml(activePayment.payment_no || '')}">补偿查单</button>` : ''}
           </div>
         </div>
@@ -1026,7 +1049,7 @@
         </form>
         <div class="token-link-row">
           <span>当前入口</span>
-          <a href="${escapeHtml(portalUrl)}" target="_blank" rel="noopener">${escapeHtml(portalUrl || '-')}</a>
+          <a href="${escapeHtml(portalUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(portalUrl || '-')}</a>
         </div>
         ${portalQrImage ? `<div class="token-qr"><img src="${escapeHtml(portalQrImage)}" alt="会员中心入口二维码" /></div>` : ''}
       </section>
@@ -1128,7 +1151,12 @@
   function saveToken(token) {
     state.token = String(token || '').trim();
     if (state.token) {
-      localStorage.setItem(TOKEN_KEY, state.token);
+      try {
+        sessionStorage.setItem(TOKEN_KEY, state.token);
+      } catch (_err) {
+        // ignore quota/storage access errors
+      }
+      localStorage.removeItem(TOKEN_KEY);
     }
   }
 
@@ -1145,12 +1173,27 @@
     };
     state.highlightedPaymentNo = '';
     state.pendingCount = 0;
+    sessionStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(TOKEN_KEY);
   }
 
   function readTokenFromUrl() {
     const url = new URL(window.location.href);
-    const token = String(url.searchParams.get('token') || '').trim();
+    const queryToken = String(url.searchParams.get('token') || '').trim();
+    let hashToken = '';
+    const hashRaw = String(url.hash || '');
+    const hashText = hashRaw.startsWith('#') ? hashRaw.slice(1) : hashRaw;
+    const hashQuery = hashText.startsWith('?') ? hashText.slice(1) : hashText;
+    const hashLooksLikeParams = hashQuery.includes('=') || /^token=/i.test(hashQuery);
+    if (hashLooksLikeParams && hashQuery !== '') {
+      const hashParams = new URLSearchParams(hashQuery);
+      hashToken = String(hashParams.get('token') || '').trim();
+      hashParams.delete('token');
+      const nextHash = hashParams.toString();
+      url.hash = nextHash === '' ? '' : `#${nextHash}`;
+    }
+
+    const token = hashToken || queryToken;
     if (!token) return '';
 
     url.searchParams.delete('token');

@@ -10,6 +10,48 @@
   const API_PREFIX = `${ROOT_PATH}/api/v1`;
   const TOKEN_KEY = 'qiling_mobile_token';
 
+  function readStoredToken() {
+    try {
+      const current = String(sessionStorage.getItem(TOKEN_KEY) || '').trim();
+      if (current !== '') {
+        return current;
+      }
+    } catch (_err) {
+      // ignore sessionStorage access errors
+    }
+
+    const legacy = String(localStorage.getItem(TOKEN_KEY) || '').trim();
+    if (legacy !== '') {
+      try {
+        sessionStorage.setItem(TOKEN_KEY, legacy);
+      } catch (_err) {
+        // ignore sessionStorage access errors
+      }
+      localStorage.removeItem(TOKEN_KEY);
+    }
+    return legacy;
+  }
+
+  function writeStoredToken(token) {
+    const value = String(token || '').trim();
+    if (!value) return;
+    try {
+      sessionStorage.setItem(TOKEN_KEY, value);
+    } catch (_err) {
+      // ignore sessionStorage access errors
+    }
+    localStorage.removeItem(TOKEN_KEY);
+  }
+
+  function clearStoredToken() {
+    try {
+      sessionStorage.removeItem(TOKEN_KEY);
+    } catch (_err) {
+      // ignore sessionStorage access errors
+    }
+    localStorage.removeItem(TOKEN_KEY);
+  }
+
   const el = {
     loginScreen: document.getElementById('loginScreen'),
     workScreen: document.getElementById('workScreen'),
@@ -29,7 +71,7 @@
   };
 
   const state = {
-    token: localStorage.getItem(TOKEN_KEY) || '',
+    token: readStoredToken(),
     user: null,
     tab: 'onboard',
     subTabs: {
@@ -1107,7 +1149,7 @@
         });
 
         state.token = String(res.token || '');
-        localStorage.setItem(TOKEN_KEY, state.token);
+        writeStoredToken(state.token);
         state.user = res.user || null;
         await loadMobileMenu();
         await loadStoreOptions();
@@ -1137,7 +1179,7 @@
         },
       };
       state.storeOptions = [];
-      localStorage.removeItem(TOKEN_KEY);
+      clearStoredToken();
       setAuthView(false);
       el.customerResult.innerHTML = '';
       el.customerKeyword.value = '';
@@ -1186,7 +1228,7 @@
     } catch (_e) {
       state.token = '';
       state.user = null;
-      localStorage.removeItem(TOKEN_KEY);
+      clearStoredToken();
       setAuthView(false);
     }
   }

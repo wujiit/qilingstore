@@ -483,9 +483,11 @@ window.__QILING_ADMIN_VIEW_FACTORIES__['portal'] = function (shared) {
             qrPreview.innerHTML = `
               <div class="portal-link-box">
                 <p><b>客户：</b>${escapeHtml((res.customer && res.customer.name) ? res.customer.name : '-')}</p>
-                <p><b>链接：</b><a href="${escapeHtml(res.portal_url || '#')}" target="_blank" rel="noopener">${escapeHtml(res.portal_url || '-')}</a></p>
+                <p><b>链接：</b><a href="${escapeHtml(res.portal_url || '#')}" target="_blank" rel="noopener noreferrer">${escapeHtml(res.portal_url || '-')}</a></p>
                 <p><button type="button" class="btn btn-line" id="btnPortalCopyLink">复制链接</button></p>
-                <img src="${escapeHtml(res.qr_code_url || '')}" alt="客户扫码二维码" />
+                ${String(res.qr_code_url || '').trim() !== ''
+                  ? `<img src="${escapeHtml(res.qr_code_url || '')}" alt="客户扫码二维码" />`
+                  : '<p class="hint">二维码预览已关闭，可直接复制链接发送给客户。</p>'}
               </div>
             `;
             const copyBtn = document.getElementById('btnPortalCopyLink');
@@ -537,9 +539,11 @@ window.__QILING_ADMIN_VIEW_FACTORIES__['portal'] = function (shared) {
                 <p><b>客户：</b>${escapeHtml((res.customer && res.customer.name) ? res.customer.name : '-')}</p>
                 <p><b>新口令：</b>${escapeHtml(res.token || (res.token_info && res.token_info.token_prefix) || '-')}</p>
                 <p><b>已作废旧口令：</b>${escapeHtml(res.revoked_count || 0)} 个</p>
-                <p><b>链接：</b><a href="${escapeHtml(res.portal_url || '#')}" target="_blank" rel="noopener">${escapeHtml(res.portal_url || '-')}</a></p>
+                <p><b>链接：</b><a href="${escapeHtml(res.portal_url || '#')}" target="_blank" rel="noopener noreferrer">${escapeHtml(res.portal_url || '-')}</a></p>
                 <p><button type="button" class="btn btn-line" id="btnPortalCopyResetLink">复制链接</button></p>
-                <img src="${escapeHtml(res.qr_code_url || '')}" alt="重置后二维码" />
+                ${String(res.qr_code_url || '').trim() !== ''
+                  ? `<img src="${escapeHtml(res.qr_code_url || '')}" alt="重置后二维码" />`
+                  : '<p class="hint">二维码预览已关闭，可直接复制链接发送给客户。</p>'}
               </div>
             `;
             const copyBtn = document.getElementById('btnPortalCopyResetLink');

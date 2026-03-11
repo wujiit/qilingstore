@@ -107,16 +107,29 @@
 
   function loadTicketsFromUrlOrStorage() {
     const url = new URL(window.location.href);
-    const ticket = String(url.searchParams.get('ticket') || '').trim();
-    const tickets = String(url.searchParams.get('tickets') || '').trim();
-    const fromUrl = normalizeTickets(`${ticket}\n${tickets}`);
+    const queryTicket = String(url.searchParams.get('ticket') || '').trim();
+    const queryTickets = String(url.searchParams.get('tickets') || '').trim();
+
+    let hashTicket = '';
+    let hashTickets = '';
+    const hashRaw = String(url.hash || '');
+    const hashText = hashRaw.startsWith('#') ? hashRaw.slice(1) : hashRaw;
+    const hashQuery = hashText.startsWith('?') ? hashText.slice(1) : hashText;
+    const hashLooksLikeParams = hashQuery.includes('=') || /^tickets?=/i.test(hashQuery);
+    if (hashLooksLikeParams && hashQuery !== '') {
+      const hashParams = new URLSearchParams(hashQuery);
+      hashTicket = String(hashParams.get('ticket') || '').trim();
+      hashTickets = String(hashParams.get('tickets') || '').trim();
+    }
+
+    const fromUrl = normalizeTickets(`${queryTicket}\n${queryTickets}\n${hashTicket}\n${hashTickets}`);
     if (fromUrl.length > 0) {
-      localStorage.setItem(TICKET_KEY, JSON.stringify(fromUrl));
+      window.sessionStorage.setItem(TICKET_KEY, JSON.stringify(fromUrl));
       return fromUrl;
     }
 
     try {
-      const raw = String(localStorage.getItem(TICKET_KEY) || '').trim();
+      const raw = String(window.sessionStorage.getItem(TICKET_KEY) || '').trim();
       if (raw === '') return [];
       const parsed = JSON.parse(raw);
       return normalizeTickets(Array.isArray(parsed) ? parsed : []);
@@ -125,19 +138,24 @@
     }
   }
 
-  function syncUrlTickets(tickets) {
-    const list = normalizeTickets(tickets);
+  function syncUrlTickets() {
     const url = new URL(window.location.href);
-    if (list.length === 0) {
-      url.searchParams.delete('ticket');
-      url.searchParams.delete('tickets');
-    } else if (list.length === 1) {
-      url.searchParams.set('ticket', list[0]);
-      url.searchParams.delete('tickets');
-    } else {
-      url.searchParams.delete('ticket');
-      url.searchParams.set('tickets', list.join(','));
+    // Always scrub ticket params from address bar/history to avoid leakage.
+    url.searchParams.delete('ticket');
+    url.searchParams.delete('tickets');
+
+    const hashRaw = String(url.hash || '');
+    const hashText = hashRaw.startsWith('#') ? hashRaw.slice(1) : hashRaw;
+    const hashQuery = hashText.startsWith('?') ? hashText.slice(1) : hashText;
+    const hashLooksLikeParams = hashQuery.includes('=') || /^tickets?=/i.test(hashQuery);
+    if (hashLooksLikeParams && hashQuery !== '') {
+      const hashParams = new URLSearchParams(hashQuery);
+      hashParams.delete('ticket');
+      hashParams.delete('tickets');
+      const nextHash = hashParams.toString();
+      url.hash = nextHash === '' ? '' : `#${nextHash}`;
     }
+
     window.history.replaceState({}, '', url.toString());
   }
 
@@ -196,7 +214,7 @@
           </div>
           <div class="qr-box">
             ${img ? `<img src="${escapeHtml(img)}" alt="支付二维码" />` : '<div class="empty">当前无二维码</div>'}
-            ${payUrl ? `<a class="btn light" href="${escapeHtml(payUrl)}" target="_blank" rel="noopener">打开支付页</a>` : ''}
+            ${payUrl ? `<a class="btn light" href="${escapeHtml(payUrl)}" target="_blank" rel="noopener noreferrer">打开支付页</a>` : ''}
           </div>
         </article>
       `;
@@ -270,8 +288,12 @@
       e.preventDefault();
       const tickets = normalizeTickets(el.ticketInput.value || '');
       state.tickets = tickets;
-      localStorage.setItem(TICKET_KEY, JSON.stringify(tickets));
-      syncUrlTickets(tickets);
+      if (tickets.length > 0) {
+        window.sessionStorage.setItem(TICKET_KEY, JSON.stringify(tickets));
+      } else {
+        window.sessionStorage.removeItem(TICKET_KEY);
+      }
+      syncUrlTickets();
       state.rows = [];
       state.pendingCount = 0;
       renderRows();
@@ -294,7 +316,7 @@
     bindEvents();
     state.tickets = loadTicketsFromUrlOrStorage();
     el.ticketInput.value = state.tickets.join('\n');
-    syncUrlTickets(state.tickets);
+    syncUrlTickets();
     renderRows();
     if (state.tickets.length > 0) {
       refresh(false);

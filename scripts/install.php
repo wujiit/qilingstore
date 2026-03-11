@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Qiling\Core\Config;
 use Qiling\Core\Database;
+use Qiling\Core\PasswordPolicy;
 
 require_once dirname(__DIR__) . '/src/bootstrap.php';
 
@@ -65,6 +66,32 @@ $ensureIndex = static function (\PDO $pdo, string $table, string $indexName, str
     }
 
     $pdo->exec('ALTER TABLE `' . str_replace('`', '``', $table) . '` ADD ' . $indexDefinition);
+};
+
+$generateStrongPassword = static function (): string {
+    $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    $lower = 'abcdefghijkmnpqrstuvwxyz';
+    $digits = '23456789';
+    $symbols = '!@#$%&*_+-=';
+    $all = $upper . $lower . $digits . $symbols;
+
+    $chars = [
+        $upper[random_int(0, strlen($upper) - 1)],
+        $lower[random_int(0, strlen($lower) - 1)],
+        $digits[random_int(0, strlen($digits) - 1)],
+        $symbols[random_int(0, strlen($symbols) - 1)],
+    ];
+
+    for ($i = 0; $i < 8; $i++) {
+        $chars[] = $all[random_int(0, strlen($all) - 1)];
+    }
+
+    for ($i = count($chars) - 1; $i > 0; $i--) {
+        $swap = random_int(0, $i);
+        [$chars[$i], $chars[$swap]] = [$chars[$swap], $chars[$i]];
+    }
+
+    return implode('', $chars);
 };
 
 $schemaPath = dirname(__DIR__) . '/sql/schema.sql';
@@ -322,10 +349,20 @@ $crmPermissionsManage = [
     'crm.assignment_rules.manage',
     'crm.transfer_logs.view',
 ];
+$dataPermissionsBasic = [
+    'users.view_basic',
+    'staff.view_basic',
+    'customers.view_basic',
+];
+$dataPermissionsSensitive = [
+    'users.view_sensitive',
+    'staff.view_sensitive',
+    'customers.view_sensitive',
+];
 
 $roles = [
-    ['admin', '系统管理员', array_merge(['dashboard', 'stores', 'staff', 'customers', 'services', 'packages', 'member_cards', 'orders', 'appointments', 'followup', 'push', 'commissions', 'reports', 'points', 'open_gifts', 'coupon_groups', 'transfers', 'prints', 'wp_users', 'system'], $crmPermissionsView, $crmPermissionsEdit, $crmPermissionsManage)],
-    ['manager', '门店经理', array_merge(['dashboard', 'stores', 'staff', 'customers', 'services', 'packages', 'member_cards', 'orders', 'appointments', 'followup', 'push', 'commissions', 'reports', 'points', 'open_gifts', 'coupon_groups', 'transfers', 'prints', 'wp_users'], $crmPermissionsView, $crmPermissionsEdit, $crmPermissionsManage)],
+    ['admin', '系统管理员', array_merge(['dashboard', 'stores', 'staff', 'customers', 'services', 'packages', 'member_cards', 'orders', 'appointments', 'followup', 'push', 'commissions', 'reports', 'points', 'open_gifts', 'coupon_groups', 'transfers', 'prints', 'wp_users', 'system'], $dataPermissionsBasic, $dataPermissionsSensitive, $crmPermissionsView, $crmPermissionsEdit, $crmPermissionsManage)],
+    ['manager', '门店经理', array_merge(['dashboard', 'stores', 'staff', 'customers', 'services', 'packages', 'member_cards', 'orders', 'appointments', 'followup', 'push', 'commissions', 'reports', 'points', 'open_gifts', 'coupon_groups', 'transfers', 'prints', 'wp_users'], $dataPermissionsBasic, $crmPermissionsView, $crmPermissionsEdit, $crmPermissionsManage)],
     ['consultant', '顾问', array_merge(['dashboard', 'customers', 'member_cards', 'orders', 'appointments', 'followup', 'reports', 'points', 'prints'], $crmPermissionsView, $crmPermissionsEdit)],
     ['therapist', '护理师', array_merge(['dashboard', 'customers', 'appointments', 'followup', 'performance'], $crmPermissionsView, $crmPermissionsEdit)],
     ['reception', '前台', array_merge(['dashboard', 'customers', 'orders', 'appointments', 'followup'], $crmPermissionsView, $crmPermissionsEdit)],
@@ -425,7 +462,27 @@ $adminUsername = (string) Config::get('INSTALL_ADMIN_USERNAME', 'admin');
 $adminEmail = (string) Config::get('INSTALL_ADMIN_EMAIL', 'admin@qiling.local');
 $adminPassword = (string) Config::get('INSTALL_ADMIN_PASSWORD', '');
 if ($adminPassword === '') {
-    $adminPassword = bin2hex(random_bytes(8));
+    for ($i = 0; $i < 10; $i++) {
+        $candidate = $generateStrongPassword();
+        $error = PasswordPolicy::validate($candidate, 'password', [
+            'username' => $adminUsername,
+            'email' => $adminEmail,
+        ]);
+        if ($error === null) {
+            $adminPassword = $candidate;
+            break;
+        }
+    }
+}
+if ($adminPassword === '') {
+    throw new RuntimeException('failed to generate a compliant admin password');
+}
+$adminPasswordError = PasswordPolicy::validate($adminPassword, 'password', [
+    'username' => $adminUsername,
+    'email' => $adminEmail,
+]);
+if ($adminPasswordError !== null) {
+    throw new RuntimeException('INSTALL_ADMIN_PASSWORD is invalid: ' . $adminPasswordError);
 }
 
 $adminStmt = $pdo->prepare('SELECT id FROM qiling_users WHERE username = :username LIMIT 1');

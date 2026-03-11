@@ -29,7 +29,24 @@
   };
 
   const state = {
-    token: localStorage.getItem(TOKEN_KEY) || '',
+    token: (() => {
+      try {
+        const current = String(sessionStorage.getItem(TOKEN_KEY) || '').trim();
+        if (current !== '') return current;
+      } catch (_err) {
+        // ignore sessionStorage access errors
+      }
+      const legacy = String(localStorage.getItem(TOKEN_KEY) || '').trim();
+      if (legacy !== '') {
+        try {
+          sessionStorage.setItem(TOKEN_KEY, legacy);
+        } catch (_err) {
+          // ignore sessionStorage access errors
+        }
+        localStorage.removeItem(TOKEN_KEY);
+      }
+      return legacy;
+    })(),
     user: null,
     storeOptions: [],
     activeView: 'dashboard',
@@ -741,7 +758,7 @@
       'staff not found': '员工不存在',
       'store not found': '门店不存在',
       'cannot disable current login account': '不能停用当前登录账号',
-      'new_password must be at least 6 chars': '新密码至少 6 位',
+      'new_password must be at least 8 chars': '新密码至少 8 位',
       'user_id is required': '用户ID不能为空',
       'id is required': 'ID 不能为空',
       'name and mobile are required': '姓名和手机号不能为空',
@@ -1096,6 +1113,7 @@
   function logout(showToast = true) {
     state.token = '';
     state.user = null;
+    sessionStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(TOKEN_KEY);
     showLogin();
     if (showToast) toast('已退出登录', 'info');
@@ -1446,7 +1464,7 @@
             <hr />
             <form id="formUserResetPassword" class="form-grid" data-confirm="确定重置该账号密码？请先通知员工。">
               <input name="user_id" placeholder="用户ID" required />
-              <input type="password" name="new_password" placeholder="新密码（至少6位）" required />
+              <input type="password" name="new_password" placeholder="新密码（至少8位，含3类字符）" required />
               <button class="btn btn-primary" type="submit">重置登录密码</button>
             </form>
             <p class="small-note">员工登录入口和管理员一致，使用“账号 + 密码”登录。</p>
@@ -5399,7 +5417,12 @@
         throw new Error('登录返回缺少 token');
       }
 
-      localStorage.setItem(TOKEN_KEY, state.token);
+      try {
+        sessionStorage.setItem(TOKEN_KEY, state.token);
+      } catch (_err) {
+        // ignore sessionStorage access errors
+      }
+      localStorage.removeItem(TOKEN_KEY);
       showApp();
       renderNav();
       await openView(state.activeView);

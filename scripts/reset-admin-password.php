@@ -6,6 +6,7 @@ use PDO;
 use Qiling\Core\Auth;
 use Qiling\Core\Config;
 use Qiling\Core\Database;
+use Qiling\Core\PasswordPolicy;
 
 $root = dirname(__DIR__);
 $envPath = $root . '/.env';
@@ -37,10 +38,6 @@ if ($username === '') {
 }
 
 $password = trim((string) ($options['password'] ?? ''));
-if ($password !== '' && strlen($password) < 6) {
-    fwrite(STDERR, "--password must be at least 6 chars.\n");
-    exit(1);
-}
 
 $now = gmdate('Y-m-d H:i:s');
 $target = findUserByUsername($pdo, $username);
@@ -49,8 +46,22 @@ if (!is_array($target) && $usernameInput === '') {
     $target = findFirstAdminUser($pdo);
 }
 
+if (is_array($target) && trim((string) ($target['username'] ?? '')) !== '') {
+    $username = trim((string) ($target['username'] ?? $username));
+}
+$contextEmail = is_array($target) ? trim((string) ($target['email'] ?? '')) : '';
+
 if ($password === '') {
-    $password = generateTempPassword();
+    $password = generateCompliantTempPassword($username, $contextEmail);
+}
+
+$passwordError = PasswordPolicy::validate($password, 'password', [
+    'username' => $username,
+    'email' => $contextEmail,
+]);
+if ($passwordError !== null) {
+    fwrite(STDERR, $passwordError . "\n");
+    exit(1);
 }
 
 if (is_array($target)) {
@@ -158,7 +169,7 @@ function printHelp(): void
     echo "  php scripts/reset-admin-password.php --list\n";
     echo "Options:\n";
     echo "  --username   target username, default INSTALL_ADMIN_USERNAME or first admin\n";
-    echo "  --password   target password, if empty then auto-generate a temp password\n";
+    echo "  --password   target password, min 8 chars and >=3 classes (upper/lower/number/symbol)\n";
     echo "  --list       list all admin users\n";
     echo "  --help       show this help\n";
 }
@@ -202,7 +213,7 @@ function findUserByUsername(PDO $pdo, string $username): ?array
     }
 
     $stmt = $pdo->prepare(
-        'SELECT id, username, role_key
+        'SELECT id, username, email, role_key
          FROM qiling_users
          WHERE username = :username
          LIMIT 1'
@@ -218,7 +229,7 @@ function findUserByUsername(PDO $pdo, string $username): ?array
 function findFirstAdminUser(PDO $pdo): ?array
 {
     $stmt = $pdo->prepare(
-        'SELECT id, username, role_key
+        'SELECT id, username, email, role_key
          FROM qiling_users
          WHERE role_key = :role_key
          ORDER BY id ASC
@@ -250,13 +261,45 @@ function uniqueEmail(PDO $pdo, string $email): string
 
 function generateTempPassword(): string
 {
-    $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnpqrstuvwxyz';
-    $len = strlen($alphabet);
-    $result = '';
-    for ($i = 0; $i < 10; $i++) {
-        $result .= $alphabet[random_int(0, $len - 1)];
+    $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    $lower = 'abcdefghijkmnpqrstuvwxyz';
+    $digits = '23456789';
+    $symbols = '!@#$%&*_+-=';
+    $all = $upper . $lower . $digits . $symbols;
+
+    $chars = [
+        $upper[random_int(0, strlen($upper) - 1)],
+        $lower[random_int(0, strlen($lower) - 1)],
+        $digits[random_int(0, strlen($digits) - 1)],
+        $symbols[random_int(0, strlen($symbols) - 1)],
+    ];
+
+    for ($i = 0; $i < 8; $i++) {
+        $chars[] = $all[random_int(0, strlen($all) - 1)];
     }
-    return $result;
+
+    for ($i = count($chars) - 1; $i > 0; $i--) {
+        $swap = random_int(0, $i);
+        [$chars[$i], $chars[$swap]] = [$chars[$swap], $chars[$i]];
+    }
+
+    return implode('', $chars);
+}
+
+function generateCompliantTempPassword(string $username, string $email): string
+{
+    for ($i = 0; $i < 10; $i++) {
+        $candidate = generateTempPassword();
+        $error = PasswordPolicy::validate($candidate, 'password', [
+            'username' => $username,
+            'email' => $email,
+        ]);
+        if ($error === null) {
+            return $candidate;
+        }
+    }
+
+    return generateTempPassword();
 }
 
 function listAdmins(PDO $pdo): void

@@ -4,8 +4,50 @@
   const CRM_ADMIN_ASSET_BASE = `${ROOT_PATH}/crm-admin/assets`;
   const TOKEN_KEY = 'qiling_crm_admin_token';
 
+  function readStoredToken() {
+    try {
+      const current = String(sessionStorage.getItem(TOKEN_KEY) || '').trim();
+      if (current !== '') {
+        return current;
+      }
+    } catch (_err) {
+      // ignore sessionStorage access errors
+    }
+
+    const legacy = String(localStorage.getItem(TOKEN_KEY) || '').trim();
+    if (legacy !== '') {
+      try {
+        sessionStorage.setItem(TOKEN_KEY, legacy);
+      } catch (_err) {
+        // ignore sessionStorage access errors
+      }
+      localStorage.removeItem(TOKEN_KEY);
+    }
+    return legacy;
+  }
+
+  function writeStoredToken(token) {
+    const value = String(token || '').trim();
+    if (!value) return;
+    try {
+      sessionStorage.setItem(TOKEN_KEY, value);
+    } catch (_err) {
+      // ignore sessionStorage access errors
+    }
+    localStorage.removeItem(TOKEN_KEY);
+  }
+
+  function clearStoredToken() {
+    try {
+      sessionStorage.removeItem(TOKEN_KEY);
+    } catch (_err) {
+      // ignore sessionStorage access errors
+    }
+    localStorage.removeItem(TOKEN_KEY);
+  }
+
   const state = {
-    token: localStorage.getItem(TOKEN_KEY) || '',
+    token: readStoredToken(),
     user: null,
     view: 'dashboard',
     meta: {
@@ -940,7 +982,7 @@
   function signOut() {
     state.token = '';
     state.user = null;
-    localStorage.removeItem(TOKEN_KEY);
+    clearStoredToken();
     closeDrawer();
     setScreen(false);
   }
@@ -1189,7 +1231,7 @@
           throw new Error('登录响应缺少 token');
         }
         state.token = token;
-        localStorage.setItem(TOKEN_KEY, token);
+        writeStoredToken(token);
         const loginUser = payload && payload.user && typeof payload.user === 'object' ? payload.user : null;
         if (loginUser && Array.isArray(loginUser.permissions)) {
           state.user = loginUser;
@@ -1220,6 +1262,30 @@
             'invalid reset code': '验证码无效或已过期，请重新获取',
             'password reset success': '密码重置成功，请使用新密码登录',
           };
+          const dynamicMin = key.match(/^(password|new_password) must be at least (\d+) chars$/);
+          if (dynamicMin) {
+            return dynamicMin[1] === 'new_password'
+              ? `新密码至少 ${dynamicMin[2]} 位`
+              : `密码至少 ${dynamicMin[2]} 位`;
+          }
+          const dynamicMax = key.match(/^(password|new_password) must be at most (\d+) chars$/);
+          if (dynamicMax) {
+            return dynamicMax[1] === 'new_password'
+              ? `新密码长度不能超过 ${dynamicMax[2]} 位`
+              : `密码长度不能超过 ${dynamicMax[2]} 位`;
+          }
+          const dynamicClasses = key.match(/^(password|new_password) must include at least (\d+) of uppercase, lowercase, number and symbol$/);
+          if (dynamicClasses) {
+            return dynamicClasses[1] === 'new_password'
+              ? `新密码需包含大写字母、小写字母、数字、符号中的至少 ${dynamicClasses[2]} 类`
+              : `密码需包含大写字母、小写字母、数字、符号中的至少 ${dynamicClasses[2]} 类`;
+          }
+          if (key === 'password must not contain spaces') return '密码不能包含空格';
+          if (key === 'new_password must not contain spaces') return '新密码不能包含空格';
+          if (key === 'password is too common or leaked') return '密码过于常见或已泄露，请更换';
+          if (key === 'new_password is too common or leaked') return '新密码过于常见或已泄露，请更换';
+          if (key === 'password is too similar to account information') return '密码不能与账号信息过于相似';
+          if (key === 'new_password is too similar to account information') return '新密码不能与账号信息过于相似';
           return map[key] || key || '找回失败';
         };
 
@@ -1240,7 +1306,7 @@
 
           const code = window.prompt('请输入收到的6位验证码');
           if (!code) return;
-          const newPassword = window.prompt('请输入新密码（至少8位）');
+          const newPassword = window.prompt('请输入新密码（至少8位，且包含大小写字母/数字/符号中的至少3类）');
           if (!newPassword) return;
 
           await request('POST', '/auth/password-reset/confirm', {

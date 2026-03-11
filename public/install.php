@@ -9,6 +9,7 @@ $envExamplePath = $projectRoot . '/.env.example';
 $envPath = $projectRoot . '/.env';
 $schemaPath = $projectRoot . '/sql/schema.sql';
 $installLockPath = $projectRoot . '/storage/install.lock';
+require_once $projectRoot . '/src/bootstrap.php';
 
 $appUrlDefault = detectAppUrl();
 $defaults = [
@@ -27,7 +28,9 @@ $defaults = [
 $message = '';
 $error = '';
 $success = false;
+$csrfToken = initInstallCsrfToken();
 
+$envFileExists = is_file($envPath);
 $installed = detectInstalled($envPath);
 $existingEnv = parseEnvFile($envPath);
 $allowWebReinstall = toBoolValue((string) ($existingEnv['INSTALL_ALLOW_REINSTALL'] ?? 'false'));
@@ -62,6 +65,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ];
 
     try {
+        if (!verifyInstallCsrfToken($csrfToken, $_POST['_csrf'] ?? null)) {
+            throw new RuntimeException('安装表单校验失败，请刷新页面后重试。');
+        }
+        assertInstallSameOrigin();
+
         if (!empty($installed['installed']) && !$locked && $autoLockError !== '') {
             throw new RuntimeException('安装锁异常，已禁止安装操作：' . $autoLockError);
         }
@@ -69,12 +77,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($locked) {
             throw new RuntimeException('安装向导已锁定。请先删除文件后再操作：' . $installLockPath);
         }
-        if (!empty($installed['installed'])) {
+        if ($envFileExists) {
             if (!$allowWebReinstall) {
-                throw new RuntimeException('系统已安装。为安全起见，网页安装向导默认禁止重装。');
+                throw new RuntimeException('检测到 .env 已存在。为安全起见，网页安装向导默认禁止重装。');
             }
             if (!$force) {
-                throw new RuntimeException('系统已安装且已开启网页重装权限。如确需重装，请使用 ?force=1 打开本页。');
+                throw new RuntimeException('已开启网页重装权限。如确需重装，请使用 ?force=1 打开本页。');
             }
         }
 
@@ -113,6 +121,68 @@ function detectAppUrl(): string
     }
 
     return $scheme . '://' . $host;
+}
+
+function initInstallCsrfToken(): string
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        @session_start();
+    }
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        return '';
+    }
+
+    $existing = $_SESSION['qiling_install_csrf'] ?? '';
+    if (is_string($existing) && strlen($existing) >= 32) {
+        return $existing;
+    }
+
+    try {
+        $token = bin2hex(random_bytes(24));
+    } catch (Throwable) {
+        $token = hash('sha256', uniqid('qiling_install_', true) . ':' . (string) mt_rand());
+    }
+    $_SESSION['qiling_install_csrf'] = $token;
+    return $token;
+}
+
+function verifyInstallCsrfToken(string $expectedToken, mixed $submitted): bool
+{
+    if ($expectedToken === '') {
+        return true;
+    }
+
+    $provided = is_string($submitted) ? trim($submitted) : '';
+    if ($provided === '') {
+        return false;
+    }
+
+    return hash_equals($expectedToken, $provided);
+}
+
+function assertInstallSameOrigin(): void
+{
+    $host = strtolower(trim((string) ($_SERVER['HTTP_HOST'] ?? '')));
+    if ($host === '') {
+        return;
+    }
+
+    $origin = trim((string) ($_SERVER['HTTP_ORIGIN'] ?? ''));
+    if ($origin !== '') {
+        $originHost = strtolower(trim((string) parse_url($origin, PHP_URL_HOST)));
+        if ($originHost !== '' && $originHost !== $host) {
+            throw new RuntimeException('安装请求来源非法（origin mismatch）');
+        }
+        return;
+    }
+
+    $referer = trim((string) ($_SERVER['HTTP_REFERER'] ?? ''));
+    if ($referer !== '') {
+        $refererHost = strtolower(trim((string) parse_url($referer, PHP_URL_HOST)));
+        if ($refererHost !== '' && $refererHost !== $host) {
+            throw new RuntimeException('安装请求来源非法（referer mismatch）');
+        }
+    }
 }
 
 /**
@@ -234,9 +304,42 @@ function validateInput(array $data): void
         throw new RuntimeException('管理员邮箱格式不正确');
     }
 
-    if (strlen($data['admin_password']) < 8) {
-        throw new RuntimeException('管理员密码至少 8 位');
+    $passwordError = \Qiling\Core\PasswordPolicy::validate($data['admin_password'], 'password', [
+        'username' => (string) ($data['admin_username'] ?? ''),
+        'email' => (string) ($data['admin_email'] ?? ''),
+    ]);
+    if ($passwordError !== null) {
+        throw new RuntimeException(translatePasswordPolicyMessage($passwordError));
     }
+}
+
+function translatePasswordPolicyMessage(string $message): string
+{
+    $message = trim($message);
+    if ($message === '') {
+        return '管理员密码不符合安全策略';
+    }
+
+    if (preg_match('/^password must be at least (\d+) chars$/', $message, $matches) === 1) {
+        return '管理员密码至少 ' . (int) ($matches[1] ?? 8) . ' 位';
+    }
+    if (preg_match('/^password must be at most (\d+) chars$/', $message, $matches) === 1) {
+        return '管理员密码长度不能超过 ' . (int) ($matches[1] ?? 128) . ' 位';
+    }
+    if ($message === 'password must not contain spaces') {
+        return '管理员密码不能包含空格';
+    }
+    if (preg_match('/^password must include at least (\d+) of uppercase, lowercase, number and symbol$/', $message, $matches) === 1) {
+        return '管理员密码需包含大写字母、小写字母、数字、符号中的至少 ' . (int) ($matches[1] ?? 3) . ' 类';
+    }
+    if ($message === 'password is too common or leaked') {
+        return '管理员密码过于常见或已泄露，请更换';
+    }
+    if ($message === 'password is too similar to account information') {
+        return '管理员密码不能与账号信息过于相似';
+    }
+
+    return '管理员密码不符合安全策略：' . $message;
 }
 
 /**
@@ -895,21 +998,24 @@ function formatEnvValue(string $value): string
                 <code><?php echo h($installLockPath); ?></code>
             </div>
         <?php endif; ?>
-        <?php if (!empty($installed['installed']) && !$success): ?>
+        <?php if ($envFileExists && !$success): ?>
             <?php if (!$allowWebReinstall): ?>
                 <div class="alert alert-warn">
-                    检测到系统已安装。网页重装默认禁用（可在 <code>.env</code> 设置
+                    检测到 <code>.env</code> 已存在。网页重装默认禁用（可在 <code>.env</code> 设置
                     <code>INSTALL_ALLOW_REINSTALL=true</code> 后配合 <code>?force=1</code> 使用）。
                 </div>
             <?php elseif (!$force): ?>
                 <div class="alert alert-warn">
-                    检测到系统已安装。若你确认要重装，请访问：
+                    已开启网页重装权限。若你确认要重装，请访问：
                     <a href="?force=1">?force=1</a>
                 </div>
             <?php endif; ?>
         <?php endif; ?>
 
         <form method="post">
+            <?php if ($csrfToken !== ''): ?>
+                <input type="hidden" name="_csrf" value="<?php echo h($csrfToken); ?>">
+            <?php endif; ?>
             <div class="grid">
                 <div class="field">
                     <label>系统访问地址 (APP_URL)</label>
@@ -940,7 +1046,7 @@ function formatEnvValue(string $value): string
                     <input type="text" name="admin_username" value="<?php echo h($data['admin_username']); ?>" required>
                 </div>
                 <div class="field">
-                    <label>管理员密码 (至少8位)</label>
+                    <label>管理员密码 (至少8位，且含3类字符)</label>
                     <input type="password" name="admin_password" required>
                 </div>
                 <div class="field">
