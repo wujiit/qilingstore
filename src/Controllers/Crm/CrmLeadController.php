@@ -853,6 +853,7 @@ final class CrmLeadController
                     $line[] = (string) ($customValues[$fieldKey] ?? '');
                 }
             }
+            $line = array_map(static fn ($cell): string => CrmSupport::csvSafeCell((string) $cell), $line);
             fputcsv($out, $line);
         }
         fclose($out);

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Qiling\Core\Push;
 
+use Qiling\Core\Config;
 use Qiling\Core\HttpClient;
 
 final class FeishuProvider implements PushProviderInterface
@@ -69,8 +70,29 @@ final class FeishuProvider implements PushProviderInterface
                 'webhook_url' => '',
             ];
         }
+        if (!$this->isHttpsUrl($webhookUrl)) {
+            return [
+                'ok' => false,
+                'error' => 'webhook_url must be https',
+                'status_code' => 0,
+                'body' => '',
+                'request_payload' => $payload,
+                'webhook_url' => $webhookUrl,
+            ];
+        }
 
-        $response = HttpClient::postJson($webhookUrl, $payload, [], 10);
+        $response = HttpClient::postJson($webhookUrl, $payload, [], 10, $this->httpClientOptions());
+        $responseError = trim((string) ($response['error'] ?? ''));
+        if ($responseError !== '') {
+            return [
+                'ok' => false,
+                'error' => $responseError,
+                'status_code' => (int) ($response['status_code'] ?? 0),
+                'body' => '',
+                'request_payload' => $payload,
+                'webhook_url' => $webhookUrl,
+            ];
+        }
         $statusCode = (int) ($response['status_code'] ?? 0);
         $body = (string) ($response['body'] ?? '');
 
@@ -126,5 +148,61 @@ final class FeishuProvider implements PushProviderInterface
         }
 
         return $mode;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function httpClientOptions(): array
+    {
+        $allowPrivateNetwork = $this->toBool((string) Config::get('PUSH_WEBHOOK_ALLOW_PRIVATE_NETWORK', 'false'));
+
+        return [
+            'block_private_network' => !$allowPrivateNetwork,
+            'disallow_redirects' => true,
+            'allowed_hosts' => $this->allowedWebhookHosts(),
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function allowedWebhookHosts(): array
+    {
+        $raw = trim((string) Config::get('PUSH_WEBHOOK_ALLOWED_HOSTS', ''));
+        if ($raw === '') {
+            return [];
+        }
+
+        $hosts = [];
+        $parts = preg_split('/[\s,;]+/', $raw);
+        if (!is_array($parts)) {
+            return [];
+        }
+        foreach ($parts as $part) {
+            $host = strtolower(trim((string) $part));
+            if ($host !== '') {
+                $hosts[$host] = $host;
+            }
+        }
+
+        return array_values($hosts);
+    }
+
+    private function toBool(string $value): bool
+    {
+        return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private function isHttpsUrl(string $url): bool
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts)) {
+            return false;
+        }
+
+        $scheme = strtolower(trim((string) ($parts['scheme'] ?? '')));
+        $host = trim((string) ($parts['host'] ?? ''));
+        return $scheme === 'https' && $host !== '';
     }
 }

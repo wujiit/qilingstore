@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Qiling\Core\Push;
 
 use PDO;
+use Qiling\Core\Config;
 
 final class PushService
 {
@@ -181,6 +182,7 @@ final class PushService
         if (!in_array($provider, ['dingtalk', 'feishu'], true)) {
             throw new \RuntimeException('provider must be dingtalk or feishu');
         }
+        self::assertValidWebhookUrl($webhookUrl);
 
         $exists = null;
         if ($id > 0) {
@@ -952,5 +954,80 @@ final class PushService
         }
 
         return substr($value, 0, $max);
+    }
+
+    private static function assertValidWebhookUrl(string $webhookUrl): void
+    {
+        $parts = parse_url($webhookUrl);
+        if (!is_array($parts)) {
+            throw new \RuntimeException('webhook_url is invalid');
+        }
+
+        $scheme = strtolower(trim((string) ($parts['scheme'] ?? '')));
+        $host = strtolower(trim((string) ($parts['host'] ?? '')));
+        if ($scheme !== 'https' || $host === '') {
+            throw new \RuntimeException('webhook_url must be https');
+        }
+        if (isset($parts['user']) || isset($parts['pass'])) {
+            throw new \RuntimeException('webhook_url auth info is forbidden');
+        }
+
+        $allowedHosts = self::allowedWebhookHosts();
+        if ($allowedHosts !== [] && !in_array($host, $allowedHosts, true)) {
+            throw new \RuntimeException('webhook_url host is not in allowlist');
+        }
+
+        if (!self::toBool((string) Config::get('PUSH_WEBHOOK_ALLOW_PRIVATE_NETWORK', 'false'))) {
+            if (in_array($host, ['localhost', 'localhost.localdomain'], true)) {
+                throw new \RuntimeException('webhook_url host is forbidden');
+            }
+
+            if (filter_var($host, FILTER_VALIDATE_IP) !== false && self::isPrivateOrReservedIp($host)) {
+                throw new \RuntimeException('webhook_url private/reserved ip is forbidden');
+            }
+        }
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private static function allowedWebhookHosts(): array
+    {
+        $raw = trim((string) Config::get('PUSH_WEBHOOK_ALLOWED_HOSTS', ''));
+        if ($raw === '') {
+            return [];
+        }
+
+        $hosts = [];
+        $parts = preg_split('/[\s,;]+/', $raw);
+        if (!is_array($parts)) {
+            return [];
+        }
+        foreach ($parts as $part) {
+            $host = strtolower(trim((string) $part));
+            if ($host !== '') {
+                $hosts[$host] = $host;
+            }
+        }
+
+        return array_values($hosts);
+    }
+
+    private static function isPrivateOrReservedIp(string $ip): bool
+    {
+        if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return true;
+        }
+
+        return filter_var(
+            $ip,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+        ) === false;
+    }
+
+    private static function toBool(string $value): bool
+    {
+        return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
     }
 }

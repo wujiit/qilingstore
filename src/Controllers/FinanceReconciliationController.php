@@ -17,6 +17,7 @@ final class FinanceReconciliationController
     public static function overview(): void
     {
         $user = Auth::requireUser(Auth::userFromBearerToken());
+        DataScope::requireManager($user);
         $requestedStoreId = isset($_GET['store_id']) && is_numeric($_GET['store_id']) ? (int) $_GET['store_id'] : null;
         $storeId = DataScope::resolveFilterStoreId($user, $requestedStoreId);
         $storeId = $storeId !== null ? $storeId : 0;

@@ -9,6 +9,7 @@ use Qiling\Core\Audit;
 use Qiling\Core\Auth;
 use Qiling\Core\DataScope;
 use Qiling\Core\Database;
+use Qiling\Core\PasswordPolicy;
 use Qiling\Support\Request;
 use Qiling\Support\Response;
 
@@ -17,6 +18,12 @@ final class UserController
     public static function index(): void
     {
         $actor = Auth::requireUser(Auth::userFromBearerToken());
+        DataScope::requireManager($actor);
+        if (!self::canViewBasic($actor)) {
+            Response::json(['message' => 'forbidden: users.view_basic required'], 403);
+            return;
+        }
+        $canViewSensitive = self::canViewSensitive($actor);
         $storeId = isset($_GET['store_id']) && is_numeric($_GET['store_id']) ? (int) $_GET['store_id'] : null;
         $scopeStoreId = DataScope::resolveFilterStoreId($actor, $storeId);
 
@@ -36,6 +43,16 @@ final class UserController
         $stmt = Database::pdo()->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (is_array($rows) && !$canViewSensitive) {
+            foreach ($rows as &$row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $row['email'] = self::maskEmail((string) ($row['email'] ?? ''));
+                $row['phone'] = self::maskPhone((string) ($row['phone'] ?? ''));
+            }
+            unset($row);
+        }
 
         Response::json(['data' => $rows]);
     }
@@ -250,6 +267,54 @@ final class UserController
         Response::json(['user_id' => $userId, 'status' => $status]);
     }
 
+    public static function remove(): void
+    {
+        $actor = Auth::requireUser(Auth::userFromBearerToken());
+        DataScope::requireAdmin($actor);
+        $data = Request::jsonBody();
+
+        $userId = Request::int($data, 'user_id', 0);
+        if ($userId <= 0) {
+            Response::json(['message' => 'user_id is required'], 422);
+            return;
+        }
+        if ($userId === (int) ($actor['id'] ?? 0)) {
+            Response::json(['message' => 'cannot disable current login account'], 422);
+            return;
+        }
+
+        $pdo = Database::pdo();
+        $targetStmt = $pdo->prepare('SELECT id, status FROM qiling_users WHERE id = :id LIMIT 1');
+        $targetStmt->execute(['id' => $userId]);
+        $target = $targetStmt->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($target)) {
+            Response::json(['message' => 'user not found'], 404);
+            return;
+        }
+
+        $now = gmdate('Y-m-d H:i:s');
+        $stmt = $pdo->prepare('UPDATE qiling_users SET status = :status, updated_at = :updated_at WHERE id = :id');
+        $stmt->execute([
+            'id' => $userId,
+            'status' => 'inactive',
+            'updated_at' => $now,
+        ]);
+
+        $staffStmt = $pdo->prepare('UPDATE qiling_staff SET status = :status, updated_at = :updated_at WHERE user_id = :user_id');
+        $staffStmt->execute([
+            'user_id' => $userId,
+            'status' => 'inactive',
+            'updated_at' => $now,
+        ]);
+
+        Audit::log((int) $actor['id'], 'user.delete', 'user', $userId, 'Soft delete user', [
+            'before_status' => (string) ($target['status'] ?? ''),
+            'after_status' => 'inactive',
+        ]);
+
+        Response::json(['user_id' => $userId, 'removed' => true, 'status' => 'inactive']);
+    }
+
     public static function resetPassword(): void
     {
         $actor = Auth::requireUser(Auth::userFromBearerToken());
@@ -262,14 +327,9 @@ final class UserController
             Response::json(['message' => 'user_id and new_password are required'], 422);
             return;
         }
-        if (strlen($newPassword) < 8) {
-            Response::json(['message' => 'new_password must be at least 8 chars'], 422);
-            return;
-        }
-
         $pdo = Database::pdo();
         $stmt = $pdo->prepare(
-            'SELECT u.id, u.role_key, COALESCE(s.store_id, 0) AS store_id
+            'SELECT u.id, u.username, u.email, u.role_key, COALESCE(s.store_id, 0) AS store_id
              FROM qiling_users u
              LEFT JOIN qiling_staff s ON s.user_id = u.id
              WHERE u.id = :id
@@ -279,6 +339,15 @@ final class UserController
         $target = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!is_array($target)) {
             Response::json(['message' => 'user not found'], 404);
+            return;
+        }
+
+        $passwordError = PasswordPolicy::validate($newPassword, 'new_password', [
+            'username' => (string) ($target['username'] ?? ''),
+            'email' => (string) ($target['email'] ?? ''),
+        ]);
+        if ($passwordError !== null) {
+            Response::json(['message' => $passwordError], 422);
             return;
         }
 
@@ -303,6 +372,58 @@ final class UserController
         Audit::log((int) $actor['id'], 'user.reset_password', 'user', $userId, 'Reset user password', []);
 
         Response::json(['user_id' => $userId, 'password_reset' => true]);
+    }
+
+    private static function canViewBasic(array $user): bool
+    {
+        if (DataScope::isAdmin($user)) {
+            return true;
+        }
+
+        if (Auth::hasPermissionStrict($user, 'users.view_basic') || Auth::hasPermissionStrict($user, 'users.view_sensitive')) {
+            return true;
+        }
+
+        return (string) ($user['role_key'] ?? '') === 'manager';
+    }
+
+    private static function canViewSensitive(array $user): bool
+    {
+        return DataScope::isAdmin($user) || Auth::hasPermissionStrict($user, 'users.view_sensitive');
+    }
+
+    private static function maskEmail(string $email): string
+    {
+        $email = trim($email);
+        if ($email === '') {
+            return '';
+        }
+        if (!str_contains($email, '@')) {
+            return '***';
+        }
+
+        [$local, $domain] = explode('@', $email, 2);
+        $local = trim($local);
+        $domain = trim($domain);
+        if ($local === '' || $domain === '') {
+            return '***';
+        }
+        if (strlen($local) <= 2) {
+            return substr($local, 0, 1) . '***@' . $domain;
+        }
+        return substr($local, 0, 2) . '***@' . $domain;
+    }
+
+    private static function maskPhone(string $phone): string
+    {
+        $digits = preg_replace('/\D+/', '', trim($phone));
+        if (!is_string($digits) || $digits === '') {
+            return '';
+        }
+        if (strlen($digits) < 7) {
+            return '***';
+        }
+        return substr($digits, 0, 3) . '****' . substr($digits, -4);
     }
 
     private static function roleExists(PDO $pdo, string $roleKey): bool

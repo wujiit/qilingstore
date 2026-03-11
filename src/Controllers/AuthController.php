@@ -15,9 +15,11 @@ final class AuthController
 {
     /** @var array{has_lock:bool,has_token_version:bool}|null */
     private static ?array $loginSchema = null;
+    private static ?bool $hasLoginIpGuardTable = null;
 
     public static function login(): void
     {
+        self::sendNoStoreHeaders();
         $data = Request::jsonBody();
         $username = Request::str($data, 'username');
         $password = Request::str($data, 'password');
@@ -32,11 +34,18 @@ final class AuthController
         $hasLockSecurity = $schema['has_lock'];
         $hasTokenVersion = $schema['has_token_version'];
         $now = gmdate('Y-m-d H:i:s');
+        $clientIp = self::resolveClientIp();
         $maxFailedAttempts = self::maxFailedAttempts();
         $lockSeconds = self::lockSeconds();
 
         $pdo->beginTransaction();
         try {
+            if (!self::consumeLoginIpRateLimit($pdo, $clientIp, $now)) {
+                $pdo->commit();
+                Response::json(['message' => 'too many requests'], 429);
+                return;
+            }
+
             $columns = 'u.id, u.username, u.email, u.password_hash, u.role_key, u.status';
             if ($hasLockSecurity) {
                 $columns .= ', u.login_failed_attempts, u.login_lock_until';
@@ -66,18 +75,23 @@ final class AuthController
                 if ($lockUntil !== '') {
                     $lockUntilTs = strtotime($lockUntil);
                     if ($lockUntilTs !== false && $lockUntilTs > time()) {
-                        $retryAfter = max(1, $lockUntilTs - time());
                         $pdo->commit();
-                        Response::json([
-                            'message' => 'account locked',
-                            'retry_after_seconds' => $retryAfter,
-                        ], 429);
+                        // Keep login error surface uniform to reduce account probing.
+                        Response::json(['message' => 'invalid credentials'], 401);
                         return;
                     }
                 }
             }
 
-            if (!is_array($user) || !password_verify($password, (string) $user['password_hash'])) {
+            $passwordMatched = false;
+            if (is_array($user)) {
+                $passwordMatched = password_verify($password, (string) $user['password_hash']);
+            } else {
+                // Consume similar hash verify cost for nonexistent users.
+                password_verify($password, self::fakePasswordHash());
+            }
+
+            if (!is_array($user) || !$passwordMatched) {
                 if (is_array($user)) {
                     if (!$hasLockSecurity) {
                         $pdo->commit();
@@ -94,11 +108,8 @@ final class AuthController
                         $lockUntilTs = time() + $lockSeconds;
                         $lockUntil = gmdate('Y-m-d H:i:s', $lockUntilTs);
                         $failedAttempts = 0;
-                        $statusCode = 429;
-                        $payload = [
-                            'message' => 'account locked due to too many failed attempts',
-                            'retry_after_seconds' => $lockSeconds,
-                        ];
+                        $statusCode = 401;
+                        $payload = ['message' => 'invalid credentials'];
                     }
 
                     $updateFailed = $pdo->prepare(
@@ -126,7 +137,7 @@ final class AuthController
 
             if (($user['status'] ?? '') !== 'active') {
                 $pdo->commit();
-                Response::json(['message' => 'account disabled'], 403);
+                Response::json(['message' => 'invalid credentials'], 401);
                 return;
             }
 
@@ -149,7 +160,7 @@ final class AuthController
                 );
                 $updateSuccess->execute([
                     'last_login_at' => $now,
-                    'last_login_ip' => self::resolveClientIp(),
+                    'last_login_ip' => $clientIp,
                     'updated_at' => $now,
                     'id' => (int) $user['id'],
                 ]);
@@ -216,6 +227,7 @@ final class AuthController
 
     public static function me(): void
     {
+        self::sendNoStoreHeaders();
         $user = Auth::requireUser(Auth::userFromBearerToken());
         Response::json(['user' => $user]);
     }
@@ -259,6 +271,21 @@ final class AuthController
         return (int) $stmt->fetchColumn() > 0;
     }
 
+    private static function tableExists(PDO $pdo, string $table): bool
+    {
+        $stmt = $pdo->prepare(
+            'SELECT COUNT(*)
+             FROM information_schema.TABLES
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = :table_name'
+        );
+        $stmt->execute([
+            'table_name' => $table,
+        ]);
+
+        return (int) $stmt->fetchColumn() > 0;
+    }
+
     private static function maxFailedAttempts(): int
     {
         $raw = (string) Config::get('LOGIN_MAX_FAILED_ATTEMPTS', '5');
@@ -273,6 +300,135 @@ final class AuthController
         return max(60, min($v, 86400));
     }
 
+    private static function loginIpWindowSeconds(): int
+    {
+        $raw = (string) Config::get('LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS', '60');
+        $v = is_numeric($raw) ? (int) $raw : 60;
+        return max(10, min($v, 3600));
+    }
+
+    private static function loginIpMaxRequests(): int
+    {
+        $raw = (string) Config::get('LOGIN_IP_RATE_LIMIT_MAX_REQUESTS', '30');
+        $v = is_numeric($raw) ? (int) $raw : 30;
+        return max(5, min($v, 300));
+    }
+
+    private static function loginIpLockSeconds(): int
+    {
+        $raw = (string) Config::get('LOGIN_IP_RATE_LIMIT_LOCK_SECONDS', '600');
+        $v = is_numeric($raw) ? (int) $raw : 600;
+        return max(30, min($v, 86400));
+    }
+
+    private static function hasLoginIpGuardTable(PDO $pdo): bool
+    {
+        if (is_bool(self::$hasLoginIpGuardTable)) {
+            return self::$hasLoginIpGuardTable;
+        }
+        self::$hasLoginIpGuardTable = self::tableExists($pdo, 'qiling_auth_ip_guards');
+        return self::$hasLoginIpGuardTable;
+    }
+
+    private static function consumeLoginIpRateLimit(PDO $pdo, string $clientIp, string $now): bool
+    {
+        if ($clientIp === '' || $clientIp === 'unknown') {
+            return true;
+        }
+        if (!self::hasLoginIpGuardTable($pdo)) {
+            // Backward compatible: if table not migrated yet, skip IP throttle.
+            return true;
+        }
+
+        $select = $pdo->prepare(
+            'SELECT ip_address, window_started_at, window_request_count, locked_until
+             FROM qiling_auth_ip_guards
+             WHERE ip_address = :ip_address
+             LIMIT 1
+             FOR UPDATE'
+        );
+        $select->execute(['ip_address' => $clientIp]);
+        $row = $select->fetch(PDO::FETCH_ASSOC);
+
+        $nowTs = time();
+        $windowSeconds = self::loginIpWindowSeconds();
+        $maxRequests = self::loginIpMaxRequests();
+        $lockSeconds = self::loginIpLockSeconds();
+
+        if (!is_array($row)) {
+            $insert = $pdo->prepare(
+                'INSERT INTO qiling_auth_ip_guards
+                 (ip_address, window_started_at, window_request_count, locked_until, created_at, updated_at)
+                 VALUES
+                 (:ip_address, :window_started_at, :window_request_count, NULL, :created_at, :updated_at)'
+            );
+            $insert->execute([
+                'ip_address' => $clientIp,
+                'window_started_at' => $now,
+                'window_request_count' => 1,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            return true;
+        }
+
+        $lockedUntilRaw = trim((string) ($row['locked_until'] ?? ''));
+        if ($lockedUntilRaw !== '') {
+            $lockedUntilTs = strtotime($lockedUntilRaw);
+            if ($lockedUntilTs !== false && $lockedUntilTs > $nowTs) {
+                return false;
+            }
+        }
+
+        $windowStartedRaw = trim((string) ($row['window_started_at'] ?? ''));
+        $windowStartedTs = $windowStartedRaw !== '' ? strtotime($windowStartedRaw) : false;
+        $requestCount = max(0, (int) ($row['window_request_count'] ?? 0));
+
+        if ($windowStartedTs === false || ($nowTs - $windowStartedTs) >= $windowSeconds) {
+            $requestCount = 1;
+            $windowStarted = $now;
+        } else {
+            $requestCount++;
+            $windowStarted = gmdate('Y-m-d H:i:s', $windowStartedTs);
+        }
+
+        if ($requestCount > $maxRequests) {
+            $lockUntil = gmdate('Y-m-d H:i:s', $nowTs + $lockSeconds);
+            $update = $pdo->prepare(
+                'UPDATE qiling_auth_ip_guards
+                 SET window_started_at = :window_started_at,
+                     window_request_count = :window_request_count,
+                     locked_until = :locked_until,
+                     updated_at = :updated_at
+                 WHERE ip_address = :ip_address'
+            );
+            $update->execute([
+                'window_started_at' => $now,
+                'window_request_count' => 0,
+                'locked_until' => $lockUntil,
+                'updated_at' => $now,
+                'ip_address' => $clientIp,
+            ]);
+            return false;
+        }
+
+        $update = $pdo->prepare(
+            'UPDATE qiling_auth_ip_guards
+             SET window_started_at = :window_started_at,
+                 window_request_count = :window_request_count,
+                 locked_until = NULL,
+                 updated_at = :updated_at
+             WHERE ip_address = :ip_address'
+        );
+        $update->execute([
+            'window_started_at' => $windowStarted,
+            'window_request_count' => $requestCount,
+            'updated_at' => $now,
+            'ip_address' => $clientIp,
+        ]);
+        return true;
+    }
+
     private static function resolveClientIp(): string
     {
         $trustProxy = in_array(
@@ -285,18 +441,23 @@ final class AuthController
             if ($forwarded !== '') {
                 $parts = explode(',', $forwarded);
                 $ip = trim((string) ($parts[0] ?? ''));
-                if ($ip !== '') {
+                if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) !== false) {
                     return $ip;
                 }
             }
 
             $real = (string) ($_SERVER['HTTP_X_REAL_IP'] ?? '');
-            if ($real !== '') {
-                return trim($real);
+            $real = trim($real);
+            if ($real !== '' && filter_var($real, FILTER_VALIDATE_IP) !== false) {
+                return $real;
             }
         }
 
-        return trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+        $remote = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+        if ($remote !== '' && filter_var($remote, FILTER_VALIDATE_IP) !== false) {
+            return $remote;
+        }
+        return 'unknown';
     }
 
     /**
@@ -325,5 +486,25 @@ final class AuthController
         }
 
         return array_values(array_unique($items));
+    }
+
+    private static function fakePasswordHash(): string
+    {
+        /** @var string|null $hash */
+        static $hash = null;
+        if (is_string($hash) && $hash !== '') {
+            return $hash;
+        }
+
+        $generated = password_hash('qiling_fake_password_probe_only', PASSWORD_BCRYPT);
+        $hash = is_string($generated) && $generated !== '' ? $generated : 'x';
+        return $hash;
+    }
+
+    private static function sendNoStoreHeaders(): void
+    {
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        header('Expires: 0');
     }
 }

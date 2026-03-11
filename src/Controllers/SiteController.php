@@ -408,18 +408,23 @@ final class SiteController
             if ($forwarded !== '') {
                 $parts = explode(',', $forwarded);
                 $ip = trim((string) ($parts[0] ?? ''));
-                if ($ip !== '') {
+                if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) !== false) {
                     return $ip;
                 }
             }
 
             $real = (string) ($_SERVER['HTTP_X_REAL_IP'] ?? '');
-            if ($real !== '') {
-                return trim($real);
+            $real = trim($real);
+            if ($real !== '' && filter_var($real, FILTER_VALIDATE_IP) !== false) {
+                return $real;
             }
         }
 
-        return trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+        $remote = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+        if ($remote !== '' && filter_var($remote, FILTER_VALIDATE_IP) !== false) {
+            return $remote;
+        }
+        return 'unknown';
     }
 
     private static function trustProxyHeaders(): bool

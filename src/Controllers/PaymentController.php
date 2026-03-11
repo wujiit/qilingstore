@@ -18,6 +18,8 @@ use Qiling\Support\Response;
 
 final class PaymentController
 {
+    private const CASHIER_TICKET_MAX_LENGTH = 512;
+
     public static function config(): void
     {
         $user = Auth::requireUser(Auth::userFromBearerToken());
@@ -98,9 +100,12 @@ final class PaymentController
         self::assertOrderAccess($user, $orderId);
 
         $subject = Request::str($data, 'subject');
-        $clientIp = Request::str($data, 'client_ip');
+        $clientIp = self::normalizeClientIp(Request::str($data, 'client_ip'));
         if ($clientIp === '') {
-            $clientIp = (string) ($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1');
+            $clientIp = self::normalizeClientIp((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+            if ($clientIp === '') {
+                $clientIp = '127.0.0.1';
+            }
         }
         $alipaySceneInput = strtolower(Request::str($data, 'alipay_scene', 'auto'));
         $alipaySceneCandidates = self::alipayDualQrSceneCandidates($alipaySceneInput);
@@ -180,9 +185,18 @@ final class PaymentController
 
     public static function publicStatus(): void
     {
-        $ticket = isset($_GET['ticket']) && is_string($_GET['ticket']) ? trim($_GET['ticket']) : '';
+        self::sendNoStoreHeaders();
+        $data = Request::jsonBody();
+        $ticket = Request::str($data, 'ticket');
+        if ($ticket === '' && isset($_GET['ticket']) && is_string($_GET['ticket'])) {
+            $ticket = trim($_GET['ticket']);
+        }
         if ($ticket === '') {
             Response::json(['message' => 'ticket is required'], 422);
+            return;
+        }
+        if (strlen($ticket) > self::CASHIER_TICKET_MAX_LENGTH) {
+            Response::json(['message' => 'ticket invalid or expired'], 401);
             return;
         }
 
@@ -203,6 +217,7 @@ final class PaymentController
 
     public static function publicStatuses(): void
     {
+        self::sendNoStoreHeaders();
         $data = Request::jsonBody();
         $tickets = self::normalizeTicketList($data['tickets'] ?? ($data['ticket'] ?? []));
         if (empty($tickets)) {
@@ -566,7 +581,6 @@ final class PaymentController
             'order_id' => (int) ($row['order_id'] ?? 0),
             'order_no' => (string) ($row['order_no'] ?? ''),
             'store_id' => (int) ($row['store_id'] ?? 0),
-            'customer_id' => (int) ($row['customer_id'] ?? 0),
             'channel' => (string) ($row['channel'] ?? ''),
             'scene' => (string) ($row['scene'] ?? ''),
             'status' => (string) ($row['status'] ?? ''),
@@ -606,6 +620,9 @@ final class PaymentController
             if ($t === '') {
                 continue;
             }
+            if (strlen($t) > self::CASHIER_TICKET_MAX_LENGTH) {
+                continue;
+            }
             $uniq[$t] = 1;
             if (count($uniq) >= 40) {
                 break;
@@ -618,6 +635,16 @@ final class PaymentController
     {
         $v = strtolower(trim((string) $value));
         return in_array($v, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private static function normalizeClientIp(string $ip): string
+    {
+        $candidate = trim($ip);
+        if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_IP) !== false) {
+            return $candidate;
+        }
+
+        return '';
     }
 
     /**
@@ -658,6 +685,10 @@ final class PaymentController
      */
     private static function parseCashierTicket(string $ticket): ?array
     {
+        if (strlen($ticket) > self::CASHIER_TICKET_MAX_LENGTH) {
+            return null;
+        }
+
         $secret = self::cashierSecret();
         if ($secret === null) {
             return null;
@@ -712,15 +743,14 @@ final class PaymentController
     private static function cashierUrl(string $ticket): string
     {
         $baseUrl = rtrim((string) Config::get('APP_URL', ''), '/');
-        if ($baseUrl === '') {
-            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-            $host = (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
-            $scriptName = (string) ($_SERVER['SCRIPT_NAME'] ?? '/index.php');
-            $base = str_replace('\\', '/', dirname($scriptName));
-            $rootPath = ($base === '/' || $base === '.') ? '' : rtrim($base, '/');
-            $baseUrl = $scheme . '://' . $host . $rootPath;
+        if ($baseUrl !== '') {
+            return $baseUrl . '/pay/#ticket=' . rawurlencode($ticket);
         }
-        return $baseUrl . '/pay/?ticket=' . rawurlencode($ticket);
+
+        $scriptName = (string) ($_SERVER['SCRIPT_NAME'] ?? '/index.php');
+        $base = str_replace('\\', '/', dirname($scriptName));
+        $rootPath = ($base === '/' || $base === '.') ? '' : rtrim($base, '/');
+        return $rootPath . '/pay/#ticket=' . rawurlencode($ticket);
     }
 
     private static function base64UrlEncode(string $raw): string
@@ -737,6 +767,13 @@ final class PaymentController
         }
         $decoded = base64_decode($raw, true);
         return is_string($decoded) ? $decoded : null;
+    }
+
+    private static function sendNoStoreHeaders(): void
+    {
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        header('Expires: 0');
     }
 
     private static function assertOrderAccess(array $user, int $orderId): void

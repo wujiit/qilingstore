@@ -9,8 +9,8 @@ use RuntimeException;
 
 final class SystemUpgradeService
 {
-    public const APP_VERSION = '1.3.2';
-    public const SCHEMA_RELEASE = '2026.03.08.2';
+    public const APP_VERSION = '1.3.3';
+    public const SCHEMA_RELEASE = '2026.03.11.1';
 
     /**
      * @return array<string, mixed>
@@ -290,6 +290,8 @@ final class SystemUpgradeService
             ['qiling_report_daily_store', 'idx_qiling_report_daily_store_aggregated_at', 'INDEX idx_qiling_report_daily_store_aggregated_at (aggregated_at)'],
             ['qiling_report_daily_channel', 'idx_qiling_report_daily_channel_store_date', 'INDEX idx_qiling_report_daily_channel_store_date (store_id, report_date)'],
             ['qiling_report_daily_channel', 'idx_qiling_report_daily_channel_channel', 'INDEX idx_qiling_report_daily_channel_channel (source_channel)'],
+            ['qiling_report_daily_channel_cost', 'idx_qiling_report_daily_channel_cost_store_date', 'INDEX idx_qiling_report_daily_channel_cost_store_date (store_id, report_date)'],
+            ['qiling_report_daily_channel_cost', 'idx_qiling_report_daily_channel_cost_channel', 'INDEX idx_qiling_report_daily_channel_cost_channel (source_channel)'],
             ['qiling_report_daily_service', 'idx_qiling_report_daily_service_store_date', 'INDEX idx_qiling_report_daily_service_store_date (store_id, report_date)'],
             ['qiling_report_daily_service', 'idx_qiling_report_daily_service_sales', 'INDEX idx_qiling_report_daily_service_sales (sales_amount)'],
             ['qiling_report_aggregate_marks', 'idx_qiling_report_aggregate_marks_aggregated_at', 'INDEX idx_qiling_report_aggregate_marks_aggregated_at (aggregated_at)'],
@@ -536,12 +538,24 @@ final class SystemUpgradeService
             'crm.automation.manage',
             'crm.bridge.edit',
         ];
+        $dataPermissionsBasic = [
+            'users.view_basic',
+            'staff.view_basic',
+            'customers.view_basic',
+        ];
+        $dataPermissionsSensitive = [
+            'users.view_sensitive',
+            'staff.view_sensitive',
+            'customers.view_sensitive',
+        ];
 
         return [
             'admin' => [
                 'name' => '系统管理员',
                 'permissions' => array_merge(
                     ['dashboard', 'stores', 'staff', 'customers', 'services', 'packages', 'member_cards', 'orders', 'appointments', 'followup', 'push', 'commissions', 'reports', 'points', 'open_gifts', 'coupon_groups', 'transfers', 'prints', 'wp_users', 'system'],
+                    $dataPermissionsBasic,
+                    $dataPermissionsSensitive,
                     $crmPermissionsView,
                     $crmPermissionsEdit,
                     $crmPermissionsManage
@@ -551,6 +565,7 @@ final class SystemUpgradeService
                 'name' => '门店经理',
                 'permissions' => array_merge(
                     ['dashboard', 'stores', 'staff', 'customers', 'services', 'packages', 'member_cards', 'orders', 'appointments', 'followup', 'push', 'commissions', 'reports', 'points', 'open_gifts', 'coupon_groups', 'transfers', 'prints', 'wp_users'],
+                    $dataPermissionsBasic,
                     $crmPermissionsView,
                     $crmPermissionsEdit,
                     $crmPermissionsManage
@@ -923,6 +938,7 @@ final class SystemUpgradeService
             'qiling_crm_dedupe_rules',
             'qiling_crm_reminder_rules',
             'qiling_crm_notifications',
+            'qiling_report_daily_channel_cost',
             'qiling_customer_crm_links',
             'qiling_crm_products',
             'qiling_crm_quotes',

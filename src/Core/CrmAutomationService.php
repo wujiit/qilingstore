@@ -461,6 +461,10 @@ final class CrmAutomationService
         $timeout = self::intValue($config['timeout_seconds'] ?? 10, 3, 30);
         $headers = self::sanitizeHeaders($config['headers'] ?? null);
         $extraPayload = is_array($config['payload'] ?? null) ? $config['payload'] : [];
+        $allowedHosts = self::allowedWebhookHosts();
+        if ($allowedHosts === []) {
+            throw new \RuntimeException('CRM_WEBHOOK_ALLOWED_HOSTS is required for webhook action');
+        }
 
         $payload = array_merge([
             'event' => 'crm.automation.triggered',
@@ -473,8 +477,17 @@ final class CrmAutomationService
             'entity' => $snapshot,
         ], $extraPayload);
 
-        $response = HttpClient::postJson($webhookUrl, $payload, $headers, $timeout);
+        $allowPrivateNetwork = self::toBool((string) Config::get('CRM_WEBHOOK_ALLOW_PRIVATE_NETWORK', 'false'));
+        $response = HttpClient::postJson($webhookUrl, $payload, $headers, $timeout, [
+            'block_private_network' => !$allowPrivateNetwork,
+            'disallow_redirects' => true,
+            'allowed_hosts' => $allowedHosts,
+            'require_allowed_hosts' => true,
+        ]);
         $statusCode = (int) ($response['status_code'] ?? 0);
+        if ((string) ($response['error'] ?? '') !== '') {
+            throw new \RuntimeException((string) $response['error']);
+        }
         if ($statusCode < 200 || $statusCode >= 300) {
             throw new \RuntimeException('webhook returned HTTP ' . $statusCode);
         }
@@ -656,6 +669,38 @@ final class CrmAutomationService
     {
         $num = is_numeric($value) ? (int) $value : 0;
         return max($min, min($num, $max));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private static function allowedWebhookHosts(): array
+    {
+        $raw = (string) Config::get('CRM_WEBHOOK_ALLOWED_HOSTS', '');
+        if (trim($raw) === '') {
+            return [];
+        }
+
+        $parts = preg_split('/[\s,;]+/', strtolower(trim($raw)));
+        if (!is_array($parts)) {
+            return [];
+        }
+
+        $hosts = [];
+        foreach ($parts as $part) {
+            $host = trim((string) $part);
+            if ($host === '') {
+                continue;
+            }
+            $hosts[$host] = $host;
+        }
+
+        return array_values($hosts);
+    }
+
+    private static function toBool(string $value): bool
+    {
+        return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
     }
 
     private static function parseDateTime(string $value): ?string

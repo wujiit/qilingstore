@@ -873,6 +873,29 @@ final class CrmSupport
         return (int) $_GET[$key];
     }
 
+    public static function csvSafeCell(string $value): string
+    {
+        $text = str_replace("\0", '', $value);
+        if ($text === '') {
+            return '';
+        }
+
+        $first = $text[0];
+        if (in_array($first, ['=', '+', '-', '@', "\t", "\r", "\n"], true)) {
+            return "'" . $text;
+        }
+
+        $trimmed = ltrim($text, " \t");
+        if ($trimmed !== '') {
+            $trimmedFirst = $trimmed[0];
+            if (in_array($trimmedFirst, ['=', '+', '-', '@'], true)) {
+                return "'" . $text;
+            }
+        }
+
+        return $text;
+    }
+
     private static function isAllowedTable(string $table): bool
     {
         return in_array($table, self::ALLOWED_TABLES, true);

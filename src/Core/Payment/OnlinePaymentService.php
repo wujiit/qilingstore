@@ -77,9 +77,12 @@ final class OnlinePaymentService
         }
 
         $openid = trim((string) ($payload['openid'] ?? ''));
-        $clientIp = trim((string) ($payload['client_ip'] ?? ($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1')));
+        $clientIp = self::normalizeClientIp((string) ($payload['client_ip'] ?? ''));
         if ($clientIp === '') {
-            $clientIp = '127.0.0.1';
+            $clientIp = self::normalizeClientIp((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+            if ($clientIp === '') {
+                $clientIp = '127.0.0.1';
+            }
         }
 
         $insert = $pdo->prepare(
@@ -478,6 +481,17 @@ final class OnlinePaymentService
         $onlineStatus = (string) $online['status'];
         $queryResult = [];
         $payCfg = PaymentConfigService::runtime($pdo);
+        if ($actorUserId <= 0 && $onlineStatus === 'pending') {
+            $retryAfter = self::publicSyncRetryAfterSeconds($online);
+            if ($retryAfter > 0) {
+                return [
+                    'payment_no' => $paymentNo,
+                    'status' => $onlineStatus,
+                    'throttled' => true,
+                    'retry_after_seconds' => $retryAfter,
+                ];
+            }
+        }
 
         if ($channel === 'alipay') {
             $client = new AlipayClient($payCfg);
@@ -981,6 +995,51 @@ final class OnlinePaymentService
     private static function toInt(mixed $value): int
     {
         return is_numeric($value) ? (int) $value : 0;
+    }
+
+    /**
+     * @param array<string, mixed> $online
+     */
+    private static function publicSyncRetryAfterSeconds(array $online): int
+    {
+        $minInterval = self::publicSyncMinIntervalSeconds();
+        if ($minInterval <= 0) {
+            return 0;
+        }
+
+        $updatedAtRaw = trim((string) ($online['updated_at'] ?? ''));
+        if ($updatedAtRaw === '') {
+            return 0;
+        }
+
+        $updatedAtTs = strtotime($updatedAtRaw);
+        if ($updatedAtTs === false) {
+            return 0;
+        }
+
+        $elapsed = time() - $updatedAtTs;
+        if ($elapsed >= $minInterval) {
+            return 0;
+        }
+
+        return max(1, $minInterval - max(0, $elapsed));
+    }
+
+    private static function publicSyncMinIntervalSeconds(): int
+    {
+        $raw = (string) Config::get('PAYMENT_PUBLIC_SYNC_MIN_INTERVAL_SECONDS', '8');
+        $value = is_numeric($raw) ? (int) $raw : 8;
+        return max(1, min($value, 300));
+    }
+
+    private static function normalizeClientIp(string $ip): string
+    {
+        $candidate = trim($ip);
+        if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_IP) !== false) {
+            return $candidate;
+        }
+
+        return '';
     }
 
     /**

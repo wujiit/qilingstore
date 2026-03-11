@@ -65,7 +65,7 @@ final class CustomerPortalController
                 $note
             );
             $portalUrl = self::portalUrl((string) $tokenInfo['token']);
-            $qrCodeUrl = 'https://quickchart.io/qr?size=360&margin=1&text=' . rawurlencode($portalUrl);
+            $qrCodeUrl = self::portalQrCodeUrl($portalUrl);
 
             Audit::log(
                 (int) $user['id'],
@@ -263,7 +263,7 @@ final class CustomerPortalController
                 $newToken
             );
             $portalUrl = self::portalUrl((string) $tokenInfo['token']);
-            $qrCodeUrl = 'https://quickchart.io/qr?size=360&margin=1&text=' . rawurlencode($portalUrl);
+            $qrCodeUrl = self::portalQrCodeUrl($portalUrl);
 
             Audit::log(
                 (int) $user['id'],
@@ -365,6 +365,8 @@ final class CustomerPortalController
         CustomerPortalService::ensureTables($pdo);
 
         if ($ipAddress !== '' && $customerId <= 0 && $customerNo === '' && $customerMobile === '') {
+            // Global IP guard can affect multiple stores, admin-only to avoid cross-store operation.
+            DataScope::requireAdmin($user);
             $updated = CustomerPortalService::unlockIpGuard($pdo, $ipAddress);
             if (!$updated) {
                 Response::json(['message' => 'ip guard not found'], 404);
@@ -432,6 +434,7 @@ final class CustomerPortalController
 
     public static function rotateToken(): void
     {
+        self::sendNoStoreHeaders();
         $data = Request::jsonBody();
         $token = Request::str($data, 'token');
         if ($token === '') {
@@ -501,7 +504,7 @@ final class CustomerPortalController
             );
             $newTokenValue = (string) ($tokenInfo['token'] ?? '');
             $portalUrl = self::portalUrl($newTokenValue);
-            $qrCodeUrl = 'https://quickchart.io/qr?size=360&margin=1&text=' . rawurlencode($portalUrl);
+            $qrCodeUrl = self::portalQrCodeUrl($portalUrl);
 
             Audit::log(
                 0,
@@ -545,7 +548,12 @@ final class CustomerPortalController
 
     public static function overview(): void
     {
-        $token = isset($_GET['token']) && is_string($_GET['token']) ? trim($_GET['token']) : '';
+        self::sendNoStoreHeaders();
+        $data = Request::jsonBody();
+        $token = Request::str($data, 'token');
+        if ($token === '' && isset($_POST['token']) && is_string($_POST['token'])) {
+            $token = trim($_POST['token']);
+        }
         if ($token === '') {
             Response::json(['message' => 'portal token is required'], 422);
             return;
@@ -699,6 +707,7 @@ final class CustomerPortalController
 
     public static function createPortalAppointment(): void
     {
+        self::sendNoStoreHeaders();
         $data = Request::jsonBody();
         $token = Request::str($data, 'token');
         if ($token === '') {
@@ -872,6 +881,7 @@ final class CustomerPortalController
 
     public static function createOnlinePayment(): void
     {
+        self::sendNoStoreHeaders();
         $data = Request::jsonBody();
         $token = Request::str($data, 'token');
         if ($token === '') {
@@ -971,6 +981,7 @@ final class CustomerPortalController
 
     public static function syncOnlinePayment(): void
     {
+        self::sendNoStoreHeaders();
         $data = Request::jsonBody();
         $token = Request::str($data, 'token');
         $paymentNo = Request::str($data, 'payment_no');
@@ -1031,6 +1042,7 @@ final class CustomerPortalController
 
     public static function syncPendingPayments(): void
     {
+        self::sendNoStoreHeaders();
         $data = Request::jsonBody();
         $token = Request::str($data, 'token');
         if ($token === '') {
@@ -1251,16 +1263,33 @@ final class CustomerPortalController
     private static function portalUrl(string $token): string
     {
         $appUrl = rtrim((string) Config::get('APP_URL', ''), '/');
-        if ($appUrl === '') {
-            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-            $host = (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
-            $scriptName = (string) ($_SERVER['SCRIPT_NAME'] ?? '/index.php');
-            $base = str_replace('\\', '/', dirname($scriptName));
-            $rootPath = ($base === '/' || $base === '.') ? '' : rtrim($base, '/');
-            $appUrl = $scheme . '://' . $host . $rootPath;
+        if ($appUrl !== '') {
+            return $appUrl . '/customer/#token=' . rawurlencode($token);
         }
 
-        return $appUrl . '/customer/?token=' . rawurlencode($token);
+        $scriptName = (string) ($_SERVER['SCRIPT_NAME'] ?? '/index.php');
+        $base = str_replace('\\', '/', dirname($scriptName));
+        $rootPath = ($base === '/' || $base === '.') ? '' : rtrim($base, '/');
+        return $rootPath . '/customer/#token=' . rawurlencode($token);
+    }
+
+    private static function portalQrCodeUrl(string $portalUrl): string
+    {
+        if (!self::portalQrThirdPartyEnabled()) {
+            return '';
+        }
+
+        return 'https://quickchart.io/qr?size=360&margin=1&text=' . rawurlencode($portalUrl);
+    }
+
+    private static function portalQrThirdPartyEnabled(): bool
+    {
+        return self::toBool((string) Config::get('PORTAL_QR_THIRD_PARTY_ENABLED', 'false'));
+    }
+
+    private static function toBool(string $value): bool
+    {
+        return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
     }
 
     /**
@@ -1453,18 +1482,23 @@ final class CustomerPortalController
             if ($forwarded !== '') {
                 $parts = explode(',', $forwarded);
                 $ip = trim((string) ($parts[0] ?? ''));
-                if ($ip !== '') {
+                if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) !== false) {
                     return $ip;
                 }
             }
 
             $real = (string) ($_SERVER['HTTP_X_REAL_IP'] ?? '');
-            if ($real !== '') {
-                return trim($real);
+            $real = trim($real);
+            if ($real !== '' && filter_var($real, FILTER_VALIDATE_IP) !== false) {
+                return $real;
             }
         }
 
-        return trim((string) ($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1')) ?: '127.0.0.1';
+        $remote = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+        if ($remote !== '' && filter_var($remote, FILTER_VALIDATE_IP) !== false) {
+            return $remote;
+        }
+        return '127.0.0.1';
     }
 
     private static function validateCustomPortalToken(string $token): string
@@ -1475,5 +1509,12 @@ final class CustomerPortalController
         }
 
         return '';
+    }
+
+    private static function sendNoStoreHeaders(): void
+    {
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        header('Expires: 0');
     }
 }

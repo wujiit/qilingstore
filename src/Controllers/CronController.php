@@ -268,15 +268,6 @@ final class CronController
         $header = $_SERVER['HTTP_X_QILING_CRON_KEY'] ?? '';
         $provided = is_string($header) ? trim($header) : '';
 
-        $allowQuery = in_array(
-            strtolower(trim((string) Config::get('CRON_ALLOW_QUERY_KEY', 'false'))),
-            ['1', 'true', 'yes', 'on'],
-            true
-        );
-        if ($provided === '' && $allowQuery && isset($_GET['key']) && is_string($_GET['key'])) {
-            $provided = trim($_GET['key']);
-        }
-
         if ($provided === '' || !hash_equals($expect, $provided)) {
             Response::json(['message' => 'Forbidden'], 403);
             exit;

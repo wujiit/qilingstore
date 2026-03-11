@@ -138,4 +138,46 @@ final class StoreController
 
         Response::json(['id' => $storeId, 'updated' => true]);
     }
+
+    public static function remove(): void
+    {
+        $actor = Auth::requireUser(Auth::userFromBearerToken());
+        DataScope::requireAdmin($actor);
+        $data = Request::jsonBody();
+
+        $storeId = Request::int($data, 'id', 0);
+        if ($storeId <= 0) {
+            Response::json(['message' => 'id is required'], 422);
+            return;
+        }
+
+        $pdo = Database::pdo();
+        $stmt = $pdo->prepare('SELECT id, status FROM qiling_stores WHERE id = :id LIMIT 1');
+        $stmt->execute(['id' => $storeId]);
+        $store = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($store)) {
+            Response::json(['message' => 'store not found'], 404);
+            return;
+        }
+
+        $now = gmdate('Y-m-d H:i:s');
+        $update = $pdo->prepare(
+            'UPDATE qiling_stores
+             SET status = :status,
+                 updated_at = :updated_at
+             WHERE id = :id'
+        );
+        $update->execute([
+            'id' => $storeId,
+            'status' => 'inactive',
+            'updated_at' => $now,
+        ]);
+
+        Audit::log((int) $actor['id'], 'store.delete', 'store', $storeId, 'Soft delete store', [
+            'before_status' => (string) ($store['status'] ?? ''),
+            'after_status' => 'inactive',
+        ]);
+
+        Response::json(['id' => $storeId, 'removed' => true, 'status' => 'inactive']);
+    }
 }

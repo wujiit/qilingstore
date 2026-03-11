@@ -132,8 +132,12 @@ final class PasswordResetService
         if ($account === '' || $email === '' || $code === '' || $newPassword === '') {
             throw new RuntimeException('account, email, code, new_password are required');
         }
-        if (strlen($newPassword) < 8) {
-            throw new RuntimeException('new_password must be at least 8 chars');
+        $passwordError = PasswordPolicy::validate($newPassword, 'new_password', [
+            'account' => $account,
+            'email' => $email,
+        ]);
+        if ($passwordError !== null) {
+            throw new RuntimeException($passwordError);
         }
 
         $user = self::findActiveUser($pdo, $account, $email);
@@ -270,19 +274,22 @@ final class PasswordResetService
             if ($forwarded !== '') {
                 $parts = explode(',', $forwarded);
                 $ip = trim((string) ($parts[0] ?? ''));
-                if ($ip !== '') {
+                if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) !== false) {
                     return $ip;
                 }
             }
 
             $realIp = trim((string) ($_SERVER['HTTP_X_REAL_IP'] ?? ''));
-            if ($realIp !== '') {
+            if ($realIp !== '' && filter_var($realIp, FILTER_VALIDATE_IP) !== false) {
                 return $realIp;
             }
         }
 
         $remoteAddr = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
-        return $remoteAddr !== '' ? $remoteAddr : 'unknown';
+        if ($remoteAddr !== '' && filter_var($remoteAddr, FILTER_VALIDATE_IP) !== false) {
+            return $remoteAddr;
+        }
+        return 'unknown';
     }
 
     private static function emailResetEnabled(): bool

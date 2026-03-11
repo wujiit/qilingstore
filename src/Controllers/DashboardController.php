@@ -14,6 +14,7 @@ final class DashboardController
     public static function summary(): void
     {
         $user = Auth::requireUser(Auth::userFromBearerToken());
+        DataScope::requireManager($user);
 
         $pdo = Database::pdo();
         if (DataScope::isAdmin($user)) {

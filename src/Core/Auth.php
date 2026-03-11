@@ -210,6 +210,39 @@ final class Auth
         return false;
     }
 
+    public static function hasPermissionStrict(array $user, string $permission): bool
+    {
+        $permission = trim($permission);
+        if ($permission === '') {
+            return true;
+        }
+
+        $roleKey = (string) ($user['role_key'] ?? '');
+        if ($roleKey === 'admin') {
+            return true;
+        }
+
+        $permissions = self::permissions($user);
+        if ($permissions === []) {
+            return false;
+        }
+
+        if (in_array('*', $permissions, true) || in_array($permission, $permissions, true)) {
+            return true;
+        }
+
+        $parts = explode('.', $permission);
+        while (count($parts) > 1) {
+            array_pop($parts);
+            $wildcard = implode('.', $parts) . '.*';
+            if (in_array($wildcard, $permissions, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public static function requirePermission(array $user, string $permission, string $message = 'Forbidden'): void
     {
         if (self::hasPermission($user, $permission)) {
